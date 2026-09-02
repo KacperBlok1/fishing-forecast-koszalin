@@ -1,10 +1,29 @@
 export function formatTime(iso: string): string {
-  const d = new Date(iso);
+  if (!iso || iso === '--') return '--';
+  // Normalize ISO format without seconds to include seconds
+  let normalized = iso;
+  if (normalized.match(/T\d{2}:\d{2}(?!\d)/)) {
+    // "2024-08-20T14:00" → "2024-08-20T14:00:00"
+    normalized = normalized.replace(/(\d{2}:\d{2})(?!\d)/, '$1:00');
+  }
+  // Handle time-only formats like "05:23" (sunrise/sunset)
+  if (!normalized.includes('T') && !normalized.includes('-')) {
+    normalized = '2000-01-01T' + normalized;
+  }
+  const d = new Date(normalized);
+  if (isNaN(d.getTime())) return '--';
   return d.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
 }
 
 export function formatDate(iso: string): string {
-  const d = new Date(iso);
+  if (!iso || iso === '--') return '--';
+  // Ensure date-only strings get a time component to avoid UTC midnight shift
+  let normalized = iso;
+  if (!normalized.includes('T')) {
+    normalized = normalized + 'T00:00:00';
+  }
+  const d = new Date(normalized);
+  if (isNaN(d.getTime())) return '--';
   return d.toLocaleDateString('pl-PL', { day: '2-digit', month: '2-digit', weekday: 'short' });
 }
 

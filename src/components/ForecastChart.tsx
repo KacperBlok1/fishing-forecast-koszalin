@@ -1,20 +1,27 @@
-import type { ForecastHourly } from '../types';
+import type { CurrentWeather, ForecastHourly } from '../types';
 import { formatTime } from '../utils/formatting';
 
 interface ForecastChartProps {
   hourly: ForecastHourly | null;
+  current: CurrentWeather | null;
 }
 
-export default function ForecastChart({ hourly }: ForecastChartProps) {
+export default function ForecastChart({ hourly, current }: ForecastChartProps) {
   if (!hourly || hourly.time.length < 24) return null;
 
-  const data = hourly.time.slice(0, 24).map((t, i) => ({
+  const startIndex = current ? hourly.time.findIndex(time => time >= current.time) : 0;
+  if (startIndex < 0) return null;
+
+  const data = hourly.time.slice(startIndex, startIndex + 24).map((t, index) => {
+    const i = startIndex + index;
+    return {
     time: t,
     temp: hourly.temperature[i],
     precip: hourly.precipitation[i],
     wind: hourly.windSpeed[i],
     pressure: hourly.pressure[i],
-  }));
+    };
+  });
 
   const maxTemp = Math.max(...data.map(d => d.temp));
   const minTemp = Math.min(...data.map(d => d.temp));

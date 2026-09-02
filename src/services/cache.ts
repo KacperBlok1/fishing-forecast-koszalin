@@ -3,7 +3,8 @@
  * Klucze są generowane z współrzędnych i typu łowiska.
  */
 
-const CACHE_KEY_PREFIX = 'fishing_cache_';
+const CACHE_KEY_NAMESPACE = 'fishing_cache_';
+const CACHE_KEY_PREFIX = `${CACHE_KEY_NAMESPACE}v2_`;
 const CACHE_TTL = 5 * 60 * 1000; // 5 minut
 
 interface CacheEntry<T> {
@@ -63,7 +64,7 @@ export function clearAllCaches(): void {
 
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
-    if (key && key.startsWith(CACHE_KEY_PREFIX)) {
+    if (key && key.startsWith(CACHE_KEY_NAMESPACE)) {
       keysToRemove.push(key);
     }
   }

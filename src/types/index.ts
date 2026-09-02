@@ -12,6 +12,7 @@ export interface GeoLocation {
 }
 
 export interface CurrentWeather {
+  time: string;
   temperature: number;
   feelsLike: number;
   relativeHumidity: number;
@@ -48,7 +49,7 @@ export interface HistoricalDaily {
   precipitationSum: number[];
   windSpeedMax: number[];
   windDirectionDominant: number[];
-  pressureMin: number[];
+  pressureMean: number[];
   weatherCode: number[];
 }
 

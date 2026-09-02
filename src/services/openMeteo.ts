@@ -14,14 +14,14 @@ const COMMON_PARAMS = [
 ].join('&');
 
 /**
- * Oblicza średnią temperaturę i minimalne ciśnienie dla każdego dnia z danych hourly.
- * Używane zamiast nieistniejących pól daily API (temperature_2m_mean, pressure_msl_max/min).
+ * Oblicza średnią temperaturę i średnie ciśnienie dla każdego dnia z danych hourly.
+ * Używane zamiast nieistniejących pól daily API (temperature_2m_mean i pressure_msl_mean).
  */
 function computeDailyFromHourly(
   hourlyTime: string[],
   hourlyTemp2m: number[],
   hourlyPressure: number[]
-): { temperatureMean: number[]; pressureMin: number[] } {
+): { temperatureMean: number[]; pressureMean: number[] } {
   const dailyTempMap = new Map<string, number[]>();
   const dailyPresMap = new Map<string, number[]>();
 
@@ -36,9 +36,11 @@ function computeDailyFromHourly(
   const temperatureMean = Array.from(dailyTempMap.values()).map(
     arr => arr.reduce((a, b) => a + b, 0) / arr.length
   );
-  const pressureMin = Array.from(dailyPresMap.values()).map(arr => Math.min(...arr));
+  const pressureMean = Array.from(dailyPresMap.values()).map(
+    arr => arr.reduce((a, b) => a + b, 0) / arr.length
+  );
 
-  return { temperatureMean, pressureMin };
+  return { temperatureMean, pressureMean };
 }
 
 /**
@@ -64,6 +66,7 @@ export async function fetchWeatherData(
 
     // Parse current weather
     data.current = {
+      time: data.current.time,
       temperature: data.current.temperature_2m,
       feelsLike: data.current.apparent_temperature,
       relativeHumidity: data.current.relative_humidity_2m,
@@ -75,8 +78,8 @@ export async function fetchWeatherData(
       windGusts: data.current.wind_gusts_10m,
       weatherCode: data.current.weather_code,
       isDay: data.current.is_day,
-      sunrise: data.daily?.sunrise?.[0]?.split('T')[1] ?? '--',
-      sunset: data.daily?.sunset?.[0]?.split('T')[1] ?? '--',
+      sunrise: data.daily?.sunrise?.[0] ?? '--',
+      sunset: data.daily?.sunset?.[0] ?? '--',
     };
 
     // Parse hourly forecast
@@ -97,15 +100,15 @@ export async function fetchWeatherData(
 
     // Parse daily data
     if (data.daily?.time) {
-      // Oblicz temperatureMean i pressureMin z hourly
-      // (pola temperature_2m_mean, pressure_msl_max, pressure_msl_min nie istnieją w daily API)
-      const { temperatureMean, pressureMin } = data.hourly?.time && data.hourly?.temperature_2m && data.hourly?.pressure_msl
+      // Open-Meteo nie udostępnia dziennych średnich temperatury i ciśnienia,
+      // więc wyliczamy je z godzinowych wartości.
+      const { temperatureMean, pressureMean } = data.hourly?.time && data.hourly?.temperature_2m && data.hourly?.pressure_msl
         ? computeDailyFromHourly(
             data.hourly.time,
             data.hourly.temperature_2m,
             data.hourly.pressure_msl
           )
-        : { temperatureMean: [] as number[], pressureMin: [] as number[] };
+        : { temperatureMean: [] as number[], pressureMean: [] as number[] };
 
       data.daily = {
         time: data.daily.time,
@@ -115,7 +118,7 @@ export async function fetchWeatherData(
         precipitationSum: data.daily.precipitation_sum,
         windSpeedMax: data.daily.wind_speed_10m_max,
         windDirectionDominant: data.daily.wind_direction_10m_dominant,
-        pressureMin,
+        pressureMean,
         weatherCode: data.daily.weather_code,
       };
     }
@@ -140,7 +143,7 @@ export async function fetchHistoricalData(
   startDate.setDate(startDate.getDate() - 3);
   const startDateStr = startDate.toISOString().split('T')[0];
 
-  // Poprawione nazwy pól + dodano hourly do obliczenia temperatureMean i pressureMin
+  // Dane godzinowe są potrzebne do obliczenia dziennych średnich.
   const url = `${ARCHIVE_URL}/archive?`
     + `daily=temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max,wind_direction_10m_dominant,weather_code`
     + `&hourly=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,weather_code`
@@ -161,14 +164,13 @@ export async function fetchHistoricalData(
     const data = await response.json();
 
     if (data.daily?.time) {
-      // Oblicz temperatureMean i pressureMin z hourly
-      const { temperatureMean, pressureMin } = data.hourly?.time && data.hourly?.temperature_2m && data.hourly?.pressure_msl
+      const { temperatureMean, pressureMean } = data.hourly?.time && data.hourly?.temperature_2m && data.hourly?.pressure_msl
         ? computeDailyFromHourly(
             data.hourly.time,
             data.hourly.temperature_2m,
             data.hourly.pressure_msl
           )
-        : { temperatureMean: [] as number[], pressureMin: [] as number[] };
+        : { temperatureMean: [] as number[], pressureMean: [] as number[] };
 
       data.daily = {
         time: data.daily.time,
@@ -178,7 +180,7 @@ export async function fetchHistoricalData(
         precipitationSum: data.daily.precipitation_sum,
         windSpeedMax: data.daily.wind_speed_10m_max,
         windDirectionDominant: data.daily.wind_direction_10m_dominant,
-        pressureMin,
+        pressureMean,
         weatherCode: data.daily.weather_code,
       };
     }
@@ -219,13 +221,13 @@ export async function fetchTrendData(
     const data = await response.json();
 
     if (data.daily?.time) {
-      const { temperatureMean, pressureMin } = data.hourly?.time && data.hourly?.temperature_2m && data.hourly?.pressure_msl
+      const { temperatureMean, pressureMean } = data.hourly?.time && data.hourly?.temperature_2m && data.hourly?.pressure_msl
         ? computeDailyFromHourly(
             data.hourly.time,
             data.hourly.temperature_2m,
             data.hourly.pressure_msl
           )
-        : { temperatureMean: [] as number[], pressureMin: [] as number[] };
+        : { temperatureMean: [] as number[], pressureMean: [] as number[] };
 
       data.daily = {
         time: data.daily.time,
@@ -235,7 +237,7 @@ export async function fetchTrendData(
         precipitationSum: data.daily.precipitation_sum,
         windSpeedMax: data.daily.wind_speed_10m_max,
         windDirectionDominant: data.daily.wind_direction_10m_dominant,
-        pressureMin,
+        pressureMean,
         weatherCode: data.daily.weather_code,
       };
     }
@@ -253,9 +255,9 @@ export async function fetchMarineData(
   latitude: number,
   longitude: number
 ): Promise<MarineResponse> {
-  const url = `${MARINE_URL}/forecast?`
-    + `current=wave_height,wave_direction,water_temperature`
-    + `&hourly=wave_height,wave_direction,water_temperature`
+  const url = `${MARINE_URL}/marine?`
+    + `current=wave_height,wave_direction,sea_surface_temperature`
+    + `&hourly=wave_height,wave_direction,sea_surface_temperature`
     + `&timezone=Europe%2FWarsaw`
     + `&latitude=${latitude}&longitude=${longitude}`;
 
@@ -271,7 +273,21 @@ export async function fetchMarineData(
 
     const data = await response.json();
 
-    return data;
+    // API zwraca pola w snake_case, a reszta aplikacji działa na camelCase.
+    return {
+      timezone: data.timezone,
+      current: data.current ? {
+        waveHeight: data.current.wave_height,
+        waveDirection: data.current.wave_direction,
+        waterTemperature: data.current.sea_surface_temperature,
+      } : undefined,
+      hourly: data.hourly ? {
+        time: data.hourly.time,
+        waveHeight: data.hourly.wave_height,
+        waveDirection: data.hourly.wave_direction,
+        waterTemperature: data.hourly.sea_surface_temperature,
+      } : undefined,
+    };
   } finally {
     clearTimeout(timeout);
   }

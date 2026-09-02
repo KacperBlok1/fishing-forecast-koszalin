@@ -13,7 +13,7 @@ export default function TrendStrip({ historical }: TrendStripProps) {
     temps: historical.temperatureMean.slice(-3),
     rains: historical.precipitationSum.slice(-3),
     wind: historical.windSpeedMax.slice(-3),
-    press: historical.pressureMin.slice(-3),
+    press: historical.pressureMean.slice(-3),
   };
 
   const tempTrend = last3.temps[last3.temps.length - 1] - last3.temps[0];

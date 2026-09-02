@@ -31,7 +31,7 @@ function calcWindScore(w: number, g: number, lt: FishingLocationType): number {
 function calcPressureScore(p: number, hd: HistoricalDaily | null): number {
   let s = MAX_SCORE; const d = Math.abs(p - 1013);
   if (d < 5) s = 90; else if (d < 15) s = 75; else if (d < 30) s = 60; else if (d < 50) s = 45; else s = 30;
-  if (hd && hd.time.length >= 2) { const c = Math.abs(p - hd.pressureMin[hd.pressureMin.length - 1]); if (c < 3) s = Math.min(s, 90); else if (c < 8) s = Math.min(s, 75); else if (c < 15) s -= 10; else s -= 20; }
+  if (hd && hd.time.length >= 2) { const c = Math.abs(p - hd.pressureMean[hd.pressureMean.length - 1]); if (c < 3) s = Math.min(s, 90); else if (c < 8) s = Math.min(s, 75); else if (c < 15) s -= 10; else s -= 20; }
   return r1(clamp(s, 0, MAX_SCORE));
 }
 function calcRainScore(cp: number, hd: HistoricalDaily | null): number {
@@ -74,10 +74,23 @@ function getRainDesc(p: number): string { if (p === 0) return 'Brak opadów.'; i
 function getTempDesc(t: number): string { if (t >= 15 && t <= 22) return 'Idealna temperatura.'; if (t >= 10 && t <= 25) return 'Dobra temperatura.'; if (t >= 5 && t <= 30) return 'Umiarkowana temperatura.'; return 'Ekstremalna temperatura.'; }
 function getCloudDesc(c: number): string { if (c >= 30 && c <= 70) return 'Częściowe zachmurzenie.'; if (c >= 15 && c <= 85) return 'Umierkowane zachmurzenie.'; if (c === 0) return 'Czyste niebo.'; return 'Całkowite zachmurzenie.'; }
 function getWaveDesc(h: number): string { if (h <= WAVE_THRESHOLDS.s) return 'Małe fale.'; if (h <= WAVE_THRESHOLDS.m) return 'Umiarkowane fale.'; if (h <= WAVE_THRESHOLDS.l) return 'Duże fale.'; return 'Bardzo duże fale!'; }
-function findBestWindows(h: ForecastHourly, _m: MarineData | null, lt: FishingLocationType): BestWindow[] {
-  const wins: BestWindow[] = []; const now = new Date();
+
+/** Dodaje godzinę do ISO-time stringa (np. "2024-08-20T14:00" → "2024-08-20T15:00"). */
+function addOneHour(iso: string): string {
+  const [datePart, timePart] = iso.split('T');
+  const [h, m] = timePart.split(':');
+  const totalMin = parseInt(h, 10) * 60 + parseInt(m, 10) + 60;
+  const nh = String(Math.floor(totalMin / 60) % 24).padStart(2, '0');
+  const nm = String(totalMin % 60).padStart(2, '0');
+  return `${datePart}T${nh}:${nm}`;
+}
+
+function findBestWindows(h: ForecastHourly, currentTime: string, _m: MarineData | null, lt: FishingLocationType): BestWindow[] {
+  const wins: BestWindow[] = [];
   const fd = h.time.map((t, i) => ({ time: t, temp: h.temperature[i], precip: h.precipitation[i], wind: h.windSpeed[i], cc: h.cloudCover[i], wc: h.weatherCode[i] }));
-  const fh = fd.filter(x => new Date(x.time) >= now);
+  // Czas z Open-Meteo jest już w strefie Europe/Warsaw; porównujemy jego
+  // tekstową reprezentację ISO, zamiast mieszać ją ze strefą przeglądarki.
+  const fh = fd.filter(x => x.time >= currentTime);
   for (let i = 0; i <= fh.length - 3; i++) {
     const w = fh.slice(i, i + 3);
     const at = w.reduce((a, b) => a + b.temp, 0) / w.length;
@@ -87,8 +100,7 @@ function findBestWindows(h: ForecastHourly, _m: MarineData | null, lt: FishingLo
     let ws = 0;
     ws += calcTempScore(at, at, null); ws += calcWindScore(aw, aw * 1.3, lt); ws += calcRainScore(ap, null); ws += calcCloudScore(w[1]?.cc ?? 50); ws += calcTimeScore(1, new Date(w[1].time).getHours()); ws = r1(ws / 5);
     if (ws > 50 && mp < RAIN_THRESHOLDS.h) {
-      const s = new Date(w[0].time), e = new Date(w[2].time); e.setHours(e.getHours() + 1);
-      wins.push({ start: s.toLocaleString('pl-PL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }), end: e.toLocaleString('pl-PL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }), score: Math.round(ws), temperature: r1(at), windSpeed: r1(aw), precipitation: r1(ap), weatherCode: w[1].wc });
+      wins.push({ start: w[0].time, end: addOneHour(w[2].time), score: Math.round(ws), temperature: r1(at), windSpeed: r1(aw), precipitation: r1(ap), weatherCode: w[1].wc });
     }
   }
   return wins.sort((a, b) => b.score - a.score).slice(0, 3);
@@ -137,7 +149,11 @@ console.assert(_t5.change === 0 && _t5.hasData === false, 'computeTrendChange(al
  */
 export function filterTrendDays(hd: HistoricalDaily | null | undefined): HistoricalDaily | null {
   if (!hd || !hd.time) return null;
-  const todayStr = new Date().toISOString().split('T')[0];
+  const dateParts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Warsaw', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  const part = (type: Intl.DateTimeFormatPartTypes) => dateParts.find(p => p.type === type)?.value;
+  const todayStr = `${part('year')}-${part('month')}-${part('day')}`;
   const indices: number[] = [];
   for (let i = 0; i < hd.time.length; i++) {
     if (hd.time[i] < todayStr) indices.push(i);
@@ -152,7 +168,7 @@ export function filterTrendDays(hd: HistoricalDaily | null | undefined): Histori
     precipitationSum: indices.map(i => hd.precipitationSum[i]),
     windSpeedMax: indices.map(i => hd.windSpeedMax[i]),
     windDirectionDominant: indices.map(i => hd.windDirectionDominant[i]),
-    pressureMin: indices.map(i => hd.pressureMin[i]),
+    pressureMean: indices.map(i => hd.pressureMean[i]),
     weatherCode: indices.map(i => hd.weatherCode[i]),
   };
 }
@@ -169,7 +185,7 @@ function createMockDaily(dates: string[], temps: number[][]): HistoricalDaily {
     precipitationSum: Array(n).fill(0),
     windSpeedMax: Array(n).fill(10),
     windDirectionDominant: Array(n).fill(180),
-    pressureMin: temps.map(t => t[3] ?? 1015),
+    pressureMean: temps.map(t => t[3] ?? 1015),
     weatherCode: Array(n).fill(2),
   };
 }
@@ -209,7 +225,7 @@ console.assert(_trend5.improvement === true, 'TEST5: improvement = true');
 
 function calcTrend(hd: HistoricalDaily | null): TrendData {
   if (!hd || hd.time.length < 2) return { temperatureChange: 0, pressureChange: 0, totalRain: 0, windTrend: 'stabilny', improvement: false };
-  const tm = hd.temperatureMean.slice(-3), pr = hd.pressureMin.slice(-3);
+  const tm = hd.temperatureMean.slice(-3), pr = hd.pressureMean.slice(-3);
   const tempResult = computeTrendChange(tm);
   const presResult = computeTrendChange(pr);
   const improvement = tempResult.hasData && presResult.hasData;
@@ -229,7 +245,7 @@ function calcTrend(hd: HistoricalDaily | null): TrendData {
   const ts = calcTempScore(current.temperature, current.feelsLike, historicalDaily);
   const cs = calcCloudScore(current.cloudCover);
   const tis = calcTimeScore(current.isDay, now.getHours());
-  const ms = locationType === "morze" && marineData?.current ? calcMarineScore(marineData.current.waveHeight, marineData.current.waveDirection, marineData.current.waterTemperature, current.windSpeed) : 100;
+  const ms = locationType === "morze" && marineData?.current ? calcMarineScore(marineData.current.waveHeight, marineData.current.waveDirection, marineData.current.waterTemperature, current.windSpeed) : 0;
   let totalScore = ws * WIND_WEIGHT + ps * PRESSURE_WEIGHT + rs * RAIN_WEIGHT + ts * TEMP_WEIGHT + cs * CLOUD_WEIGHT + tis * TIME_WEIGHT + ms * MARINE_WEIGHT;
   totalScore = Math.round(totalScore);
   let verdict: FishingVerdict, verdictLabel: string, verdictIcon: string;
@@ -258,13 +274,14 @@ function calcTrend(hd: HistoricalDaily | null): TrendData {
     addF("Temperatura morza", "\u{1F30A}", marineData.current.waterTemperature + "\u00B0C", "neutral", "Woda: " + marineData.current.waterTemperature + "\u00B0C");
   }
   const keyFactors = factors.filter(f => f.impact !== "neutral").sort((a, b) => ({ positive: 1, negative: -1, neutral: 0 }[b.impact] - { positive: 1, negative: -1, neutral: 0 }[a.impact])).slice(0, 4).map(f => f.icon + " " + f.name + ": " + f.description);
-  const bestWindows = findBestWindows(hourly, marineData, locationType);
+  const bestWindows = findBestWindows(hourly, current.time, marineData, locationType);
   const trend = calcTrend(historicalDaily);
   const calculationNotes: string[] = [];
   if (totalScore >= 75) calculationNotes.push("\u{1F7E2} Warunki bardzo sprzyjające!");
   else if (totalScore >= 45) calculationNotes.push("\u{1F7E1} Warunki umiarkowane.");
   else calculationNotes.push("\u{1F534} Warunki niezbyt sprzyjające.");
   if (locationType === "morze" && marineData?.current && marineData.current.waveHeight > WAVE_THRESHOLDS.l) calculationNotes.push("\u26A0\uFE0F Fale powyżej 2m!");
+  if (locationType === "morze" && !marineData?.current) calculationNotes.push("\u26A0\uFE0F Brak danych morskich — wynik uwzględnia to ostrożnościowo.");
   if (current.windGusts > current.windSpeed * 2) calculationNotes.push("\u{1F4A8} Zmienny wiatr z podmuchami.");
   if (current.pressure < 990) calculationNotes.push("\u{1F327}\uFE0F Niskie ciśnienie.");
   return { score: totalScore, verdict, verdictLabel, verdictIcon, components, factors, bestWindows, trend, keyFactors, calculationNotes };
