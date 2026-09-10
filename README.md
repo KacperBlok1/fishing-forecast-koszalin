@@ -72,6 +72,18 @@ npm run dev
 
 Vite wyświetli adres lokalnego serwera, zwykle `http://localhost:5173`.
 
+### Jakość kodu i testy
+
+```bash
+npm run typecheck   # sprawdzenie typów TypeScript
+npm run lint        # ESLint
+npm run format      # Prettier — formatuje pliki
+npm run format:check
+npm test            # testy jednostkowe (Vitest), m.in. dla src/utils/scoring.ts
+```
+
+Każdy push i pull request na branchu `main` uruchamia te same kroki (poza `format`) w GitHub Actions — zobacz `.github/workflows/ci.yml`.
+
 ### Build produkcyjny
 
 ```bash

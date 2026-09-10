@@ -1,14 +1,13 @@
-import { Clock, Sun, Moon } from 'lucide-react';
-import type { BestWindow, CurrentWeather } from '../types';
+import { Clock } from 'lucide-react';
+import type { BestWindow } from '../types';
 import { formatTime, formatTemp } from '../utils/formatting';
 import { getWeatherCodeIcon } from '../utils/formatting';
 
 interface BestWindowsProps {
   windows: BestWindow[] | null;
-  current: CurrentWeather | null;
 }
 
-export default function BestWindows({ windows, current }: BestWindowsProps) {
+export default function BestWindows({ windows }: BestWindowsProps) {
   if (!windows || windows.length === 0) return null;
 
   const topWindows = windows.slice(0, 4);

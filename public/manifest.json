@@ -1,0 +1,14 @@
+{
+  "name": "Czy warto iść na ryby? — Prognoza wędkarska",
+  "short_name": "Warto na ryby?",
+  "description": "Ocena warunków wędkarskich 0-100 na podstawie pogody, dla jeziora, rzeki lub morza.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0B1613",
+  "theme_color": "#0B1613",
+  "lang": "pl",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

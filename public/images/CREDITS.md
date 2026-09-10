@@ -37,3 +37,9 @@ Wszystkie zdjęcia pochodzą z [Wikimedia Commons](https://commons.wikimedia.org
 - **Opis:** Sylwetka wędkarza na brzegu rzeki o świcie/zachodzie słońca, Padma River, Bangladesh.
 - **Parametry pobrania:** 2048×1282 px → 1400×876 px, JPEG quality 80
 - **Rozmiar po kompresji:** 92 KB
+
+---
+
+## Wersje WebP
+
+Dla każdego z powyższych zdjęć wygenerowano dodatkowo wersję `.webp` (jakość 78) używaną jako preferowane źródło w `<picture>`, z oryginalnym plikiem `.jpg` jako fallbackiem dla przeglądarek bez wsparcia WebP. Zmniejsza to wagę pobieranego obrazu tła o ok. 20-55%.

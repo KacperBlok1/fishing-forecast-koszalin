@@ -11,7 +11,7 @@
 .search-dropdown { position:absolute; top:calc(100% + 6px); left:0; right:0; background:var(--bg-card); border:1px solid var(--border-subtle); border-radius:var(--radius-md); z-index:100; overflow:hidden; box-shadow:var(--shadow-lg); max-height:240px; overflow-y:auto; }
 .search-dropdown ul { list-style:none; padding:0.25rem 0; }
 .search-dropdown li { display:flex; align-items:center; gap:0.5rem; padding:0.65rem 1rem; cursor:pointer; color:var(--text-primary); font-size:0.9rem; transition:background 0.15s; }
-.search-dropdown li:hover { background:var(--bg-card-hover); }
+.search-dropdown li:hover, .search-dropdown li.active { background:var(--bg-card-hover); }
 .search-dropdown li svg { flex-shrink:0; color:var(--green-accent); }
 .searching, .search-empty { padding:0.75rem 1rem; color:var(--text-muted); font-size:0.85rem; text-align:center; }
 .search-actions { display:flex; align-items:center; justify-content:center; gap:0.75rem; flex-wrap:wrap; }

@@ -1,10 +1,9 @@
-import { Wind, Droplets, CloudSun, Gauge, Thermometer, Sunrise, Sunset } from 'lucide-react';
-import type { CurrentWeather, HistoricalDaily } from '../types';
+import { Wind, Droplets, CloudSun, Gauge, Thermometer, Sunrise } from 'lucide-react';
+import type { CurrentWeather } from '../types';
 import { formatTime, formatTemp } from '../utils/formatting';
 
 interface CurrentConditionsProps {
   current: CurrentWeather | null;
-  historical: HistoricalDaily | null;
 }
 
 function getWeatherEmoji(code: number): string {
@@ -19,7 +18,7 @@ function getWeatherEmoji(code: number): string {
   return map[code] || '';
 }
 
-export default function CurrentConditions({ current, historical }: CurrentConditionsProps) {
+export default function CurrentConditions({ current }: CurrentConditionsProps) {
   if (!current) return null;
 
   const conditions = [

@@ -47,15 +47,29 @@ export default function HeroSection({ locationName, locationType, result, curren
 
   const scoreColor = score >= 75 ? '#9EBC8A' : score >= 45 ? '#D2D0A0' : '#C47060';
 
+  // Tło hero dopasowane do typu łowiska (wcześniej zawsze pokazywało to samo jezioro,
+  // mimo że w projekcie były już przygotowane osobne zdjęcia dla rzeki i morza).
+  const heroImage = locationType === 'morze'
+    ? { src: '/images/sea-storm.jpg', webp: '/images/sea-storm.webp', width: 1280, height: 952, alt: 'Fale Bałtyku na polskim wybrzeżu' }
+    : locationType === 'rzeka'
+      ? { src: '/images/fisherman-silhouette.jpg', webp: '/images/fisherman-silhouette.webp', width: 1400, height: 876, alt: 'Wędkarz na brzegu rzeki o świcie' }
+      : { src: '/images/hero-lake-dawn.jpg', webp: '/images/hero-lake-dawn.webp', width: 1920, height: 1232, alt: 'Jezioro o świcie — spokojna tafla wody w porannym świetle' };
+
   return (
     <section className="hero">
       <div className="hero-bg">
-        <img
-          src="/images/hero-lake-dawn.jpg"
-          alt="Jezioro o świcie — spokojna tafla wody w porannym świetle"
-          className="hero-bg-image ken-burns"
-          loading="eager"
-        />
+        <picture key={heroImage.src}>
+          <source srcSet={heroImage.webp} type="image/webp" />
+          <img
+            src={heroImage.src}
+            width={heroImage.width}
+            height={heroImage.height}
+            alt={heroImage.alt}
+            className="hero-bg-image ken-burns"
+            loading="eager"
+            fetchPriority="high"
+          />
+        </picture>
         <div className="hero-gradient" />
         <div className="hero-vignette" />
       </div>

@@ -1,6 +1,6 @@
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import type { HistoricalDaily } from '../types';
-import { formatDate, formatTemp } from '../utils/formatting';
+import { formatDate } from '../utils/formatting';
 
 interface TrendStripProps {
   historical: HistoricalDaily | null;

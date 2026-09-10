@@ -43,6 +43,10 @@ export default function ForecastChart({ hourly, current }: ForecastChartProps) {
   const areaPath = `${linePath} L${points[points.length - 1].x},${h} L${points[0].x},${h} Z`;
 
   const maxPrecip = Math.max(...data.map(d => d.precip), 1);
+  const totalPrecip = Math.round(data.reduce((a, d) => a + d.precip, 0) * 10) / 10;
+  const chartTitle = 'Prognoza temperatury i opadów na najbliższe 24 godziny';
+  const chartDesc = `Temperatura od ${Math.round(minTemp)}°C do ${Math.round(maxTemp)}°C.` +
+    (totalPrecip > 0 ? ` Łączne przewidywane opady: ${totalPrecip} mm.` : ' Bez opadów.');
 
   return (
     <div className="card card-chart reveal reveal-delay-2">
@@ -50,7 +54,9 @@ export default function ForecastChart({ hourly, current }: ForecastChartProps) {
         <h2>Prognoza 24h</h2>
       </div>
       <div className="chart-container">
-        <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="xMidYMid meet">
+        <svg width="100%" height={h} viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="xMidYMid meet" role="img" aria-labelledby="forecast-chart-title forecast-chart-desc">
+          <title id="forecast-chart-title">{chartTitle}</title>
+          <desc id="forecast-chart-desc">{chartDesc}</desc>
           <defs>
             <linearGradient id="tempGrad" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="var(--green-light)" stopOpacity="0.4" />
@@ -130,6 +136,22 @@ export default function ForecastChart({ hourly, current }: ForecastChartProps) {
           </text>
         </svg>
       </div>
+      <table className="sr-only">
+        <caption>Dane godzinowe prognozy — temperatura, opady i wiatr</caption>
+        <thead>
+          <tr><th scope="col">Godzina</th><th scope="col">Temperatura</th><th scope="col">Opady</th><th scope="col">Wiatr</th></tr>
+        </thead>
+        <tbody>
+          {data.map((d, i) => (
+            <tr key={i}>
+              <td>{formatTime(d.time)}</td>
+              <td>{Math.round(d.temp)}°C</td>
+              <td>{d.precip > 0 ? `${d.precip} mm` : 'brak'}</td>
+              <td>{Math.round(d.wind)} km/h</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
       <div className="chart-labels">
         <span>
           <svg width="12" height="12" viewBox="0 0 12 12" style={{ verticalAlign: 'middle', marginRight: 4 }}>

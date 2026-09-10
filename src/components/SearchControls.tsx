@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
-import { MapPin, Search, X, ArrowRight } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { MapPin, X, ArrowRight } from 'lucide-react';
 import type { FishingLocationType, GeoLocation } from '../types';
+import { searchCity } from '../services/geocoding';
 
 interface SearchControlsProps {
-  locationName: string;
   locationType: FishingLocationType;
   onChangeLocation: (name: string, lat: number, lng: number) => void;
   onChangeType: (type: FishingLocationType) => void;
@@ -16,11 +16,22 @@ const LOCATION_TYPES: { value: FishingLocationType; label: string }[] = [
   { value: 'morze', label: 'Morze' },
 ];
 
-export default function SearchControls({ locationName, locationType, onChangeLocation, onChangeType, onRefresh }: SearchControlsProps) {
+export default function SearchControls({ locationType, onChangeLocation, onChangeType, onRefresh }: SearchControlsProps) {
   const [sq, setSq] = useState('');
   const [sr, setSr] = useState<GeoLocation[]>([]);
   const [showDropdown, setShowDropdown] = useState(false);
   const [searching, setSearching] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const [prevSr, setPrevSr] = useState(sr);
+  const listRef = useRef<HTMLUListElement>(null);
+
+  // Reset podświetlenia listy przy każdej nowej liście wyników — zrobione w trakcie
+  // renderu (a nie w useEffect), zgodnie z zaleceniem React dot. resetowania stanu
+  // pochodnego, żeby uniknąć dodatkowego, zbędnego przebiegu renderowania.
+  if (sr !== prevSr) {
+    setPrevSr(sr);
+    setActiveIndex(-1);
+  }
 
   useEffect(() => {
     const handler = () => setShowDropdown(false);
@@ -34,12 +45,7 @@ export default function SearchControls({ locationName, locationType, onChangeLoc
     if (sq.trim().length < 2) { setSr([]); return; }
     setSearching(true);
     try {
-      const res = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(sq.trim())}&count=5&language=pl&format=json`);
-      const data = await res.json();
-      const results: GeoLocation[] = (data.results || [])
-        .filter((r: any) => r.country === 'Polska')
-        .map((r: any) => ({ id: r.id, name: r.name, latitude: r.latitude, longitude: r.longitude, country: r.country, admin1: r.admin1 }));
-      setSr(results);
+      setSr(await searchCity(sq));
     } catch {
       setSr([]);
     } finally {
@@ -57,7 +63,33 @@ export default function SearchControls({ locationName, locationType, onChangeLoc
     setSq('');
     setSr([]);
     setShowDropdown(false);
+    setActiveIndex(-1);
   };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!showDropdown || sr.length === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setActiveIndex((i) => (i + 1) % sr.length);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setActiveIndex((i) => (i <= 0 ? sr.length - 1 : i - 1));
+    } else if (e.key === 'Enter') {
+      if (activeIndex >= 0 && activeIndex < sr.length) {
+        e.preventDefault();
+        selectLocation(sr[activeIndex]);
+      }
+    } else if (e.key === 'Escape') {
+      setShowDropdown(false);
+      setActiveIndex(-1);
+    }
+  };
+
+  useEffect(() => {
+    if (activeIndex < 0 || !listRef.current) return;
+    const el = listRef.current.children[activeIndex] as HTMLElement | undefined;
+    el?.scrollIntoView({ block: 'nearest' });
+  }, [activeIndex]);
 
   return (
     <div className="search-bar">
@@ -69,8 +101,14 @@ export default function SearchControls({ locationName, locationType, onChangeLoc
             value={sq}
             onChange={(e) => { setSq(e.target.value); setShowDropdown(true); }}
             onFocus={() => sq.trim().length >= 2 && setShowDropdown(true)}
+            onKeyDown={handleKeyDown}
             placeholder="Szukaj miasta..."
             aria-label="Szukaj miasta"
+            role="combobox"
+            aria-expanded={showDropdown && sr.length > 0}
+            aria-controls="search-results-list"
+            aria-activedescendant={activeIndex >= 0 ? `search-result-${activeIndex}` : undefined}
+            aria-autocomplete="list"
           />
           {sq && (
             <button className="search-clear" onClick={() => { setSq(''); setSr([]); setShowDropdown(false); }} aria-label="Wyczyść">
@@ -83,9 +121,17 @@ export default function SearchControls({ locationName, locationType, onChangeLoc
           <div className="search-dropdown">
             {searching && <div className="searching">Wyszukiwanie...</div>}
             {!searching && sr.length > 0 && (
-              <ul>
-                {sr.map((g) => (
-                  <li key={g.id} onClick={() => selectLocation(g)}>
+              <ul id="search-results-list" role="listbox" ref={listRef}>
+                {sr.map((g, i) => (
+                  <li
+                    key={g.id}
+                    id={`search-result-${i}`}
+                    role="option"
+                    aria-selected={i === activeIndex}
+                    className={i === activeIndex ? 'active' : ''}
+                    onMouseEnter={() => setActiveIndex(i)}
+                    onClick={() => selectLocation(g)}
+                  >
                     <ArrowRight size={14} />
                     <span>{g.name}{g.admin1 ? `, ${g.admin1}` : ''}</span>
                   </li>
