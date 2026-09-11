@@ -1,5 +1,4 @@
 import { existsSync } from 'node:fs';
-import type { ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import cookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
@@ -8,7 +7,7 @@ import { config } from './config.js';
 import { closePool, waitForDatabase } from './db/pool.js';
 import { runMigrations } from './db/migrate.js';
 import { attachUser } from './lib/auth.js';
-import { HttpError } from './lib/errors.js';
+import { HttpError, getErrorMessage, getErrorStatusCode } from './lib/errors.js';
 import { cleanupExpiredSessions } from './lib/sessions.js';
 import { authRoutes } from './routes/auth.js';
 import { prefsRoutes } from './routes/prefs.js';
@@ -55,7 +54,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    const statusCode = typeof error.statusCode === 'number' ? error.statusCode : 500;
+    const statusCode = getErrorStatusCode(error);
     if (statusCode >= 500) {
       request.log.error({ err: error }, 'Nieobsłużony błąd');
       reply.code(500).send({
@@ -68,7 +67,7 @@ async function main(): Promise<void> {
     }
 
     reply.code(statusCode).send({
-      error: { code: 'bad_request', message: error.message || 'Nieprawidłowe żądanie.' },
+      error: { code: 'bad_request', message: getErrorMessage(error) || 'Nieprawidłowe żądanie.' },
     });
   });
 
@@ -91,15 +90,18 @@ async function main(): Promise<void> {
       root: clientDir,
       index: false,
       wildcard: false,
-      setHeaders(response: ServerResponse, path: string) {
+      // Typy parametrów zostawiamy do wywnioskowania przez TypeScript z sygnatury
+      // @fastify/static — własna adnotacja (np. ServerResponse z node:http) nie
+      // pasuje do oczekiwanego SetHeadersResponse i wywala kompilację.
+      setHeaders: (res, path) => {
         // Pliki z hashem w nazwie (Vite) można trzymać w cache długo,
         // ale powłoka i service worker muszą być zawsze świeże.
         if (path.endsWith('index.html') || path.endsWith('sw.js') || path.endsWith('manifest.json')) {
-          response.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
         } else if (path.includes(`${'/'}assets${'/'}`)) {
-          response.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
         } else {
-          response.setHeader('Cache-Control', 'public, max-age=86400');
+          res.setHeader('Cache-Control', 'public, max-age=86400');
         }
       },
     });
