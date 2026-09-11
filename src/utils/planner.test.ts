@@ -3,18 +3,22 @@ import { DAY_BEST_WEIGHT, MAX_WINDOW_HOURS, buildPlannerResult, findWindows } fr
 import { ratingLabel } from './scoring';
 import { addHours, formatDayShort, formatHour, isoDate, minutesOfDay } from './time';
 import { moonForDate } from './moon';
-import { parseCoordinates } from '../services/geocoding';
+import { parseCoordinates } from './coordinates';
 import type { DayPoint, HourPoint, Spot, WeatherBundle } from '../types';
 
 const LAKE: Spot = {
-  id: 'test-lake',
+  id: '11111111-1111-4111-8111-111111111111',
   name: 'Jezioro testowe',
   latitude: 54.2833,
   longitude: 16.1667,
   type: 'jezioro',
+  note: null,
+  sortOrder: 0,
+  createdAt: '2026-09-01T10:00:00.000Z',
+  updatedAt: '2026-09-01T10:00:00.000Z',
 };
 
-const SEA: Spot = { ...LAKE, id: 'test-sea', name: 'Morze testowe', type: 'morze' };
+const SEA: Spot = { ...LAKE, id: '22222222-2222-4222-8222-222222222222', name: 'Morze testowe', type: 'morze' };
 
 function pad(value: number): string {
   return String(value).padStart(2, '0');
@@ -70,6 +74,7 @@ function makeBundle(options: { withMarine?: boolean } = {}): WeatherBundle {
 
   return {
     fetchedAt: Date.parse('2026-09-11T12:00:00Z'),
+    stale: false,
     timezone: 'Europe/Warsaw',
     current: hours.find((h) => h.time === '2026-09-11T12:00')!,
     hours,

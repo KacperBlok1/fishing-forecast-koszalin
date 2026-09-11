@@ -1,17 +1,23 @@
-import type { Spot } from '../types';
+import type { SpotType } from '../lib/validate.js';
+
+export interface DefaultSpot {
+  name: string;
+  latitude: number;
+  longitude: number;
+  type: SpotType;
+  note: string;
+}
 
 /**
- * Przykładowe łowiska z Koszalina i okolic.
+ * Zestaw łowisk zakładany każdemu nowemu kontu, żeby aplikacja nie witała
+ * pustą listą. Użytkownik może je edytować i usuwać jak własne — to zwykłe
+ * rekordy w tabeli spots, nie żadne "wbudowane" byty.
  *
- * Współrzędne są przybliżone (punkt reprezentatywny dla akwenu) — prognoza
- * Open-Meteo i tak jest interpolowana do siatki o boku kilku kilometrów,
- * więc dokładność do kilkuset metrów nie zmienia wyniku. Użytkownik może
- * dodać własne miejsce po nazwie albo po współrzędnych.
+ * Współrzędne są przybliżone (punkt reprezentatywny dla akwenu); model
+ * pogodowy i tak interpoluje do siatki o boku kilku kilometrów.
  */
-export const DEFAULT_SPOTS: Spot[] = [
-  // ---------- Jeziora ----------
+export const DEFAULT_SPOTS: DefaultSpot[] = [
   {
-    id: 'jamno',
     name: 'Jezioro Jamno',
     latitude: 54.2833,
     longitude: 16.1667,
@@ -19,7 +25,6 @@ export const DEFAULT_SPOTS: Spot[] = [
     note: 'Duże jezioro przymorskie tuż za Koszalinem',
   },
   {
-    id: 'bukowo',
     name: 'Jezioro Bukowo',
     latitude: 54.35,
     longitude: 16.267,
@@ -27,7 +32,6 @@ export const DEFAULT_SPOTS: Spot[] = [
     note: 'Płytkie jezioro przymorskie koło Dąbek',
   },
   {
-    id: 'rosnowskie',
     name: 'Jezioro Rosnowskie',
     latitude: 54.093,
     longitude: 16.313,
@@ -35,17 +39,13 @@ export const DEFAULT_SPOTS: Spot[] = [
     note: 'Zbiornik zaporowy na Radwi, ok. 15 km na południe',
   },
   {
-    id: 'kwiecko',
     name: 'Jezioro Kwiecko',
     latitude: 54.033,
     longitude: 16.65,
     type: 'jezioro',
     note: 'Zbiornik elektrowni szczytowo-pompowej Żydowo',
   },
-
-  // ---------- Rzeki ----------
   {
-    id: 'radew-niedalino',
     name: 'Radew (Niedalino)',
     latitude: 54.08,
     longitude: 16.22,
@@ -53,7 +53,6 @@ export const DEFAULT_SPOTS: Spot[] = [
     note: 'Nizinno-podgórski odcinek Radwi',
   },
   {
-    id: 'wieprza-slawno',
     name: 'Wieprza (Sławno)',
     latitude: 54.362,
     longitude: 16.677,
@@ -61,7 +60,6 @@ export const DEFAULT_SPOTS: Spot[] = [
     note: 'Rzeka łososiowa, szeroki nurt',
   },
   {
-    id: 'grabowa-polanow',
     name: 'Grabowa (Polanów)',
     latitude: 54.118,
     longitude: 16.7,
@@ -69,7 +67,6 @@ export const DEFAULT_SPOTS: Spot[] = [
     note: 'Czysta, szybka rzeka pstrągowa',
   },
   {
-    id: 'parseta-karlino',
     name: 'Parsęta (Karlino)',
     latitude: 54.042,
     longitude: 15.87,
@@ -77,17 +74,13 @@ export const DEFAULT_SPOTS: Spot[] = [
     note: 'Dolny bieg Parsęty, ok. 35 km od Koszalina',
   },
   {
-    id: 'dzierzecinka',
     name: 'Dzierżęcinka (Koszalin)',
     latitude: 54.195,
     longitude: 16.185,
     type: 'rzeka',
     note: 'Mała rzeka w granicach miasta',
   },
-
-  // ---------- Morze ----------
   {
-    id: 'mielno',
     name: 'Mielno — plaża',
     latitude: 54.261,
     longitude: 16.062,
@@ -95,7 +88,6 @@ export const DEFAULT_SPOTS: Spot[] = [
     note: 'Najbliższe Koszalinowi wyjście nad Bałtyk',
   },
   {
-    id: 'uniescie',
     name: 'Unieście',
     latitude: 54.274,
     longitude: 16.118,
@@ -103,7 +95,6 @@ export const DEFAULT_SPOTS: Spot[] = [
     note: 'Wschodni kraniec mierzei jamneńskiej',
   },
   {
-    id: 'sarbinowo',
     name: 'Sarbinowo',
     latitude: 54.286,
     longitude: 15.97,
@@ -111,7 +102,6 @@ export const DEFAULT_SPOTS: Spot[] = [
     note: 'Szeroka plaża na zachód od Mielna',
   },
   {
-    id: 'darlowko',
     name: 'Darłówko — port',
     latitude: 54.434,
     longitude: 16.38,
@@ -119,7 +109,6 @@ export const DEFAULT_SPOTS: Spot[] = [
     note: 'Falochrony i ujście Wieprzy',
   },
   {
-    id: 'ustronie-morskie',
     name: 'Ustronie Morskie',
     latitude: 54.218,
     longitude: 15.757,
@@ -127,6 +116,3 @@ export const DEFAULT_SPOTS: Spot[] = [
     note: 'Plaża z ostrogami, ok. 40 km od Koszalina',
   },
 ];
-
-/** Łowisko wybierane, gdy użytkownik nie ma jeszcze nic zapisanego. */
-export const DEFAULT_SPOT_ID = 'jamno';

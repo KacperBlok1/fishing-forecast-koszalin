@@ -9,7 +9,7 @@ import {
   WINDOW_MIN_SCORE,
   WIND_THRESHOLDS,
 } from '../utils/scoring';
-import { FORECAST_DAYS, PAST_DAYS } from '../services/openMeteo';
+import { FORECAST_DAYS, PAST_DAYS } from '../services/weather';
 
 const FACTOR_DESCRIPTIONS: { key: keyof typeof WEIGHTS; label: string; text: string }[] = [
   {
@@ -233,13 +233,15 @@ export default function WhyTab() {
             <strong>Open-Meteo Geocoding API</strong> — wyszukiwanie miejscowości przy dodawaniu własnego łowiska.
           </li>
           <li>
-            <strong>Obliczenia lokalne</strong> — faza księżyca (z długości miesiąca synodycznego) i cała punktacja.
+            <strong>Obliczenia lokalne</strong> — faza księżyca (z długości miesiąca synodycznego) i cała punktacja,
+            wykonywane w Twojej przeglądarce.
           </li>
         </ul>
         <p className="fineprint">
-          Zapytania idą prosto z Twojej przeglądarki do Open-Meteo. Aplikacja nie ma własnego serwera, nie zbiera
-          danych i nie wysyła niczego nigdzie indziej. Wybrane łowisko, gatunek i ostatnie wyniki zapisują się tylko w
-          localStorage tej przeglądarki.
+          Do Open-Meteo odpytuje serwer aplikacji, nie Twoja przeglądarka. Odpowiedzi trafiają do cache w bazie, więc
+          telefon i komputer dzielą jedno zapytanie na łowisko na kwadrans, a aplikacja działa również wtedy, gdy
+          urządzenie ma dostęp tylko do serwera w sieci lokalnej. Łowiska i ustawienia są zapisane przy Twoim koncie
+          — nie opuszczają Twojego serwera.
         </p>
       </section>
 

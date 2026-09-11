@@ -1,33 +1,62 @@
 # Czy warto iść na ryby? — planer wypadu
 
-Mobilna aplikacja wędkarska dla **Koszalina i okolic**. Odpowiada na trzy pytania:
-**czy warto dziś iść na ryby, kiedy dokładnie i dlaczego akurat tyle punktów**.
+Aplikacja wędkarska dla **Koszalina i okolic**, postawiona na własnym serwerze.
+Odpowiada na trzy pytania: **czy warto dziś iść na ryby, kiedy dokładnie
+i dlaczego akurat tyle punktów**.
 
 Dla wybranego łowiska i gatunku liczy ocenę **0–100** z etykietą
-*słabo / średnio / dobrze / bardzo dobrze*, rozkłada wynik na konkretne czynniki pogodowe,
-pokazuje najlepsze okna czasowe w ciągu doby i prognozę na 7 dni. Dla łowisk morskich
-dokłada osobny tryb z falą i oceną bezpieczeństwa.
+*słabo / średnio / dobrze / bardzo dobrze*, rozkłada wynik na konkretne czynniki
+pogodowe, pokazuje najlepsze okna czasowe w ciągu doby i prognozę na 7 dni.
+Dla łowisk morskich dokłada tryb z falą i oceną bezpieczeństwa.
 
-> Ocena jest wskazówką, a nie gwarancją brań. Przed wyjazdem sprawdź ostrzeżenia pogodowe,
-> bezpieczeństwo nad wodą oraz regulamin i okresy ochronne w swoim okręgu.
+Łowiska i ustawienia są **zapisane przy koncie na serwerze**: miejsce dodane
+na telefonie jest od razu dostępne na komputerze i odwrotnie.
 
-Aplikacja jest **statycznym frontendem**: bez backendu, bez bazy danych, bez logowania
-i bez kluczy API. Wszystkie obliczenia dzieją się w przeglądarce, a ustawienia zapisują się
-wyłącznie w `localStorage` urządzenia.
+> Ocena jest wskazówką, a nie gwarancją brań. Przed wyjazdem sprawdź ostrzeżenia
+> pogodowe, bezpieczeństwo nad wodą oraz regulamin i okresy ochronne w swoim okręgu.
+
+**Wdrożenie krok po kroku: [docs/WDROZENIE.md](docs/WDROZENIE.md)**
+
+---
+
+## Architektura
+
+```
+przeglądarka  ──►  :8090  fishing-forecast  ──►  fishing-db      (konta, łowiska, cache)
+(telefon,                    (Fastify:            └─►  Open-Meteo     (pogoda, 1 zapytanie / 15 min)
+ komputer)                    API + frontend)
+```
+
+Dwa kontenery w jednym `docker-compose.yml`:
+
+| Kontener | Obraz | Rola | Port |
+| --- | --- | --- | --- |
+| `fishing-db` | `postgres:17-alpine` | Konta, łowiska, ustawienia, cache pogody | brak (tylko sieć Dockera) |
+| `fishing-forecast` | budowany z repo | Fastify: `/api` + zbudowany frontend | `8090` |
+
+Istotna zmiana względem wersji 2: **do Open-Meteo odpytuje serwer, nie przeglądarka**.
+Dzięki temu telefon i komputer dzielą jeden cache (jedno zapytanie na łowisko na
+kwadrans niezależnie od liczby urządzeń), a aplikacja działa też wtedy, gdy
+urządzenie ma dostęp wyłącznie do serwera w LAN-ie.
 
 ---
 
 ## Funkcje
 
+### Konta i synchronizacja
+
+- rejestracja i logowanie (e-mail + hasło, bcrypt, sesja w ciasteczku `httpOnly` na 90 dni);
+- łowiska, wybrany gatunek i aktywna zakładka zapisane przy koncie w Postgresie;
+- powrót do karty odświeża listę — łowisko dodane na telefonie pojawia się na komputerze;
+- rejestrację można wyłączyć jedną zmienną (`ALLOW_REGISTRATION=false`);
+- każde nowe konto dostaje czternaście przykładowych łowisk z okolic Koszalina.
+
 ### Łowiska
 
-- lista zapisanych łowisk z podziałem na **jezioro / rzekę / morze**;
-- kilkanaście przykładowych miejsc z okolic Koszalina (Jamno, Bukowo, Rosnowskie, Kwiecko,
-  Radew, Wieprza, Grabowa, Parsęta, Dzierżęcinka, Mielno, Unieście, Sarbinowo, Darłówko,
-  Ustronie Morskie);
-- dodawanie własnego łowiska **po nazwie miejscowości** (Open-Meteo Geocoding) albo
-  **po współrzędnych** (`54.1943, 16.2207`, `54,1943 16,2207`, `54.19 N 16.22 E`);
-- własne łowiska można usuwać; wbudowane zostają na stałe.
+- podział na **jezioro / rzekę / morze**, dodawanie własnych miejsc;
+- wyszukiwanie **po nazwie miejscowości** albo podanie **współrzędnych**
+  (`54.1943, 16.2207`, `54,1943 16,2207`, `54.19 N 16.22 E`);
+- usuwanie z potwierdzeniem w dwóch kliknięciach.
 
 ### Widoki
 
@@ -35,12 +64,12 @@ wyłącznie w `localStorage` urządzenia.
 | --- | --- |
 | **Teraz** | Ocena bieżąca, rozbicie na czynniki, korekta gatunkowa, trend z 3 dni, tryb morski |
 | **Dziś** | Najlepsze okno dnia, lista okien czasowych, godzinowy wykres i tabela |
-| **7 dni** | Ocena każdego dnia (najlepsze okno + średnia) z rozwijanymi szczegółami i oknami |
-| **Dlaczego?** | Pełny, jawny opis algorytmu, progów, reguł gatunkowych, źródeł danych i ograniczeń |
+| **7 dni** | Ocena każdego dnia (najlepsze okno + średnia) z rozwijanymi szczegółami |
+| **Dlaczego?** | Pełny, jawny opis algorytmu, progów, reguł gatunkowych, źródeł i ograniczeń |
 
 ### Wyjaśnienie wyniku
 
-Każdy czynnik ma widoczną wagę, ocenę cząstkową 0–100, konkretną wartość i zdanie opisu:
+Każdy czynnik ma widoczną wagę, ocenę cząstkową 0–100, konkretną wartość i opis:
 
 - temperatura oraz **jej zmiana względem średniej z 3 poprzednich dni**;
 - wiatr — prędkość, kierunek i porywy, z progami zależnymi od akwenu;
@@ -53,25 +82,28 @@ Każdy czynnik ma widoczną wagę, ocenę cząstkową 0–100, konkretną warto�
 
 ### Gatunki
 
-Szczupak, okoń, sandacz, karp, leszcz, pstrąg, dorsz. Wybór gatunku zmienia zarówno opis,
-jak i wynik — przez zestaw sześciu jawnych reguł ograniczonych do ±12 punktów.
+Szczupak, okoń, sandacz, karp, leszcz, pstrąg, dorsz. Wybór gatunku zmienia opis
+i wynik przez zestaw sześciu jawnych reguł ograniczonych do ±12 punktów. Gatunki
+nietypowe dla wybranego akwenu są oznaczone na liście.
 
 ### Tryb morski
 
-Dla łowisk typu „morze” dokładany jest komponent fali (Open-Meteo Marine API) oraz osobny
-panel z wysokością, okresem i kierunkiem fali, temperaturą wody i etykietą bezpieczeństwa
-(*bezpiecznie / ostrożnie / trudne warunki / niebezpiecznie*).
-**Gdy API nie zwróci danych, aplikacja pisze to wprost** — nie podstawia wymyślonych liczb
-i nie dolicza komponentu morskiego do wyniku.
+Komponent fali z Marine API, panel z wysokością, okresem i kierunkiem fali,
+temperaturą wody i etykietą bezpieczeństwa (*bezpiecznie / ostrożnie /
+trudne warunki / niebezpiecznie*). **Gdy API nie zwróci danych, aplikacja pisze to
+wprost** — nie podstawia wymyślonych liczb i nie dolicza komponentu do wyniku.
 
-### Niezawodność i PWA
+### Niezawodność
 
-- stan ładowania (szkielety), czytelne komunikaty błędów i przycisk ponowienia;
-- cache ostatniej poprawnej odpowiedzi w `localStorage` (świeża przez 15 minut,
-  używana awaryjnie przez 24 h) z widocznym wiekiem danych;
-- wykrywanie braku internetu i osobny komunikat offline;
-- instalacja na telefonie (manifest + ikony) i offline'owy cache **interfejsu**
-  przez service workera — dane pogodowe celowo nie są cache'owane przez SW.
+- cache pogody w Postgresie: świeży przez 15 minut, awaryjny przez 24 godziny;
+- gdy Open-Meteo nie odpowiada, serwer oddaje ostatnią poprawną odpowiedź, a klient
+  pokazuje jej wiek i komunikat;
+- lokalna kopia w `localStorage` pozwala otworzyć aplikację bez kontaktu z serwerem
+  w trybie tylko do odczytu;
+- PWA: manifest, ikony, instalacja na telefonie, offline'owy cache interfejsu
+  (żądania `/api` nigdy nie trafiają do cache service workera);
+- responsywny układ od 360 px (jedna kolumna, szuflada z łowiskami) do 1920 px
+  (stały panel boczny, dwie kolumny treści).
 
 ---
 
@@ -159,21 +191,48 @@ są tylko godziny, które jeszcze nie minęły.
 
 ## Źródła danych
 
-Wszystkie dane pochodzą z publicznych, bezkluczowych usług
-[Open-Meteo](https://open-meteo.com/), odpytywanych bezpośrednio z przeglądarki użytkownika:
+Dane pochodzą z publicznych, bezkluczowych usług
+[Open-Meteo](https://open-meteo.com/), odpytywanych **przez serwer aplikacji**:
 
-| API | Do czego |
-| --- | --- |
-| [Forecast API](https://open-meteo.com/en/docs) | Pogoda bieżąca, godzinowa i dzienna: 3 dni wstecz + 7 dni prognozy, `timezone=auto` |
-| [Marine API](https://open-meteo.com/en/docs/marine-weather-api) | Wysokość, kierunek i okres fali, temperatura powierzchni morza — **tylko dla łowisk morskich** |
-| [Geocoding API](https://open-meteo.com/en/docs/geocoding-api) | Wyszukiwanie miejscowości przy dodawaniu własnego łowiska |
+| API | Do czego | Cache |
+| --- | --- | --- |
+| [Forecast API](https://open-meteo.com/en/docs) | Pogoda bieżąca, godzinowa i dzienna: 3 dni wstecz + 7 dni prognozy, `timezone=auto` | 15 min |
+| [Marine API](https://open-meteo.com/en/docs/marine-weather-api) | Fala i temperatura wody — tylko dla łowisk morskich | 15 min |
+| [Geocoding API](https://open-meteo.com/en/docs/geocoding-api) | Wyszukiwanie miejscowości przy dodawaniu łowiska | 7 dni |
 
-Faza księżyca liczona jest lokalnie z długości miesiąca synodycznego (`src/utils/moon.ts`) —
-Open-Meteo jej nie udostępnia, a jest w pełni deterministyczna.
+Faza księżyca liczona jest lokalnie z długości miesiąca synodycznego
+(`src/utils/moon.ts`) — Open-Meteo jej nie udostępnia, a jest w pełni deterministyczna.
 
 Dane Open-Meteo są udostępniane na licencji
-[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); oznaczenie źródła znajduje się
-w stopce aplikacji i w zakładce „Dlaczego?”.
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); oznaczenie źródła
+znajduje się w stopce aplikacji i w zakładce „Dlaczego?".
+
+---
+
+## API
+
+Wszystkie odpowiedzi są w JSON. Poza `/api/health` i `/api/auth/*` każdy endpoint
+wymaga ciasteczka sesji.
+
+| Metoda | Ścieżka | Opis |
+| --- | --- | --- |
+| `GET` | `/api/health` | Sprawdzenie, czy serwer żyje |
+| `GET` | `/api/auth/config` | Czy rejestracja jest otwarta |
+| `POST` | `/api/auth/register` | Założenie konta (+ zasianie przykładowych łowisk) |
+| `POST` | `/api/auth/login` | Logowanie |
+| `POST` | `/api/auth/logout` | Wylogowanie z tego urządzenia |
+| `POST` | `/api/auth/logout-all` | Wylogowanie ze wszystkich urządzeń |
+| `POST` | `/api/auth/change-password` | Zmiana hasła (unieważnia wszystkie sesje) |
+| `GET` | `/api/auth/me` | Dane zalogowanego użytkownika |
+| `GET` | `/api/spots` | Lista łowisk konta |
+| `POST` | `/api/spots` | Dodanie łowiska |
+| `PATCH` | `/api/spots/:id` | Edycja łowiska |
+| `DELETE` | `/api/spots/:id` | Usunięcie łowiska |
+| `GET` | `/api/prefs` | Ustawienia widoku |
+| `PUT` | `/api/prefs` | Zapis ustawień |
+| `GET` | `/api/weather/forecast?spotId=` | Prognoza (z cache) |
+| `GET` | `/api/weather/marine?spotId=` | Dane morskie (z cache) |
+| `GET` | `/api/weather/geocode?q=` | Wyszukiwanie miejscowości |
 
 ---
 
@@ -181,36 +240,32 @@ w stopce aplikacji i w zakładce „Dlaczego?”.
 
 ```text
 .
-├── public/
-│   ├── images/           # zdjęcia tła + CREDITS.md
-│   ├── manifest.json     # manifest PWA
-│   ├── sw.js             # service worker — cache powłoki interfejsu
-│   └── icon-*.png        # ikony aplikacji
-├── src/
-│   ├── data/
-│   │   ├── spots.ts      # przykładowe łowiska okolic Koszalina
-│   │   └── species.ts    # profile 7 gatunków i ich reguły
-│   ├── services/
-│   │   ├── openMeteo.ts  # Forecast + Marine API, timeouty, ponowienia, tryb offline
-│   │   ├── geocoding.ts  # wyszukiwanie miejscowości i parsowanie współrzędnych
-│   │   ├── cache.ts      # cache ostatniej poprawnej odpowiedzi (localStorage)
-│   │   ├── storage.ts    # łowiska, wybór gatunku, zakładka, ostatni wynik
-│   │   └── serviceWorker.ts
-│   ├── utils/
-│   │   ├── scoring.ts    # oceny cząstkowe, wagi, korekta gatunkowa
-│   │   ├── planner.ts    # oceny godzinowe, okna, prognoza 7-dniowa, trend
-│   │   ├── moon.ts       # faza księżyca
-│   │   ├── time.ts       # czas lokalny łowiska bez udziału strefy przeglądarki
-│   │   └── formatting.ts
-│   ├── components/       # interfejs (zakładki, wykres, modal łowisk, panel morski…)
-│   ├── styles/           # globals.css + components.css
-│   ├── types/index.ts
+├── docker-compose.yml       # dwa kontenery: db + app
+├── Dockerfile               # build klienta i serwera → jeden obraz
+├── .env.example             # wzór konfiguracji
+├── docs/
+│   └── WDROZENIE.md         # instrukcja wdrożenia krok po kroku
+├── server/                  # backend (Fastify + Postgres)
+│   ├── package.json
+│   └── src/
+│       ├── index.ts         # bootstrap, statyki, obsługa błędów
+│       ├── config.ts        # konfiguracja ze zmiennych środowiskowych
+│       ├── db/              # pula połączeń i migracje SQL
+│       ├── lib/             # sesje, hasła, walidacja, limity, błędy
+│       ├── data/            # łowiska zasiewane nowemu kontu
+│       ├── routes/          # auth, spots, prefs, weather
+│       └── services/        # Open-Meteo i cache w Postgresie
+├── src/                     # frontend (React + TypeScript)
+│   ├── api/                 # warstwa HTTP i typy odpowiedzi
+│   ├── hooks/               # stan sesji
+│   ├── services/            # normalizacja pogody, lustro w localStorage
+│   ├── utils/               # scoring, planner, księżyc, czas, współrzędne
+│   ├── components/          # interfejs
+│   ├── styles/              # system designu (globals + components)
+│   ├── types/
 │   ├── App.tsx
 │   └── main.tsx
-├── Dockerfile            # build Vite + produkcyjny Nginx
-├── docker-compose.yml    # kontener i healthcheck, port 8090
-├── nginx.conf            # SPA fallback, cache statyków, wyjątki dla sw.js i manifestu
-└── README.md
+└── public/                  # manifest PWA, service worker, ikony, zdjęcia
 ```
 
 ### Uwaga o czasie
@@ -224,114 +279,73 @@ ma ustawioną inną strefę czasową.
 
 ## Technologie
 
-React 19 · TypeScript · Vite 6 · czyste CSS · Vitest · Docker + Nginx · Open-Meteo API.
+**Frontend:** React 19 · TypeScript · Vite 6 · czyste CSS (własny system designu) · Vitest
+**Backend:** Node 20 · Fastify 5 · PostgreSQL 17 · bcryptjs
+**Infrastruktura:** Docker + Docker Compose
 
-Zero zależności runtime poza React — wykres, ikony i cała logika są napisane w projekcie.
+Zero zależności runtime po stronie klienta poza Reactem — wykres, ikony i cała
+logika punktacji są napisane w projekcie. Po stronie serwera pięć zależności:
+`fastify`, `@fastify/cookie`, `@fastify/static`, `pg`, `bcryptjs`.
 
 ---
 
-## Uruchomienie lokalne
+## Uruchomienie lokalne (development)
 
-### Wymagania
-
-- Node.js 20 lub nowszy;
-- npm.
-
-### Instalacja i development
+Potrzebujesz Node.js 20+ i działającego Postgresa. Najprościej podnieść samą bazę
+z compose'a, a serwer i frontend uruchomić lokalnie:
 
 ```bash
-git clone <URL_REPOZYTORIUM>
-cd fishing-forecast-koszalin
+# 1. zależności
 npm ci
+npm run server:install
+
+# 2. baza (sam kontener db)
+cp .env.example .env   # uzupełnij POSTGRES_PASSWORD i SESSION_SECRET
+docker compose up -d db
+
+# 3. backend na :8090
+DATABASE_URL=postgres://fishing:TWOJE_HASLO@localhost:5432/fishing \
+SESSION_SECRET=cokolwiek-dlugiego \
+npm run server:dev
+
+# 4. frontend na :5173 (proxy /api → :8090)
 npm run dev
 ```
 
-Vite wyświetli adres lokalnego serwera, zwykle `http://localhost:5173`.
-
-> Service worker rejestruje się wyłącznie w buildzie produkcyjnym, żeby nie przeszkadzać
-> w hot reloadzie.
+Żeby baza była dostępna z hosta na czas developmentu, dodaj jej tymczasowo
+`ports: ['5432:5432']` w `docker-compose.yml` (w produkcji tego nie rób).
 
 ### Jakość kodu i testy
 
 ```bash
-npm run typecheck   # sprawdzenie typów TypeScript
-npm run lint        # ESLint
-npm run format      # Prettier — formatuje pliki
-npm run format:check
-npm test            # testy jednostkowe (Vitest): scoring, planner, czas, księżyc, współrzędne
+npm run typecheck        # typy frontendu
+npm run lint             # ESLint
+npm test                 # testy jednostkowe (Vitest)
+npm run build            # build produkcyjny frontendu
+npm run server:typecheck # typy backendu
+npm run server:build     # build backendu
 ```
 
-Każdy push i pull request na branchu `main` uruchamia te same kroki w GitHub Actions —
-zobacz `.github/workflows/ci.yml`.
-
-### Build produkcyjny
-
-```bash
-npm run build
-npm run preview
-```
-
-Pliki wynikowe trafiają do katalogu `dist/`.
+Testy pokrywają silnik punktacji, planer okien i prognozy dziennej, obsługę czasu
+lokalnego łowiska, fazę księżyca i parsowanie współrzędnych.
 
 ---
 
-## Wdrożenie na serwerze z Dockerem
+## Wdrożenie
 
-Sposób wdrożenia **nie zmienił się** względem poprzedniej wersji.
+Pełna instrukcja: **[docs/WDROZENIE.md](docs/WDROZENIE.md)** — wymagania dla LXC na
+Proxmoksie, instalacja Dockera, konfiguracja `.env`, smoke-testy, kopie zapasowe,
+aktualizacja, HTTPS i lista typowych problemów.
 
-### Wymagania
-
-- Docker Engine;
-- Docker Compose Plugin (`docker compose`);
-- wolny port TCP, domyślnie `8090`.
-
-### Szybkie wdrożenie
+Skrót dla niecierpliwych:
 
 ```bash
-git clone <URL_REPOZYTORIUM> fishing-forecast-koszalin
-cd fishing-forecast-koszalin
+git clone <URL_REPOZYTORIUM> fishing-forecast
+cd fishing-forecast
+cp .env.example .env
+# uzupełnij POSTGRES_PASSWORD i SESSION_SECRET
 docker compose up -d --build
-```
-
-Sprawdzenie kontenera i healthchecku:
-
-```bash
-docker compose ps
-curl http://localhost:8090
-```
-
-Aplikacja będzie dostępna pod `http://ADRES_IP_SERWERA:8090`.
-
-### Aktualizacja z v1 do v2
-
-```bash
-git pull
-docker compose up -d --build
-docker image prune -f
-```
-
-Po aktualizacji odśwież stronę na telefonie **dwukrotnie** albo zamknij i otwórz
-zainstalowaną aplikację — pierwsze wejście pobiera nowego service workera, drugie
-przechodzi już na nową powłokę. `nginx.conf` wysyła dla `/sw.js` nagłówek `no-cache`,
-więc nie trzeba czyścić cache ręcznie.
-
-### Zmiana portu
-
-```bash
-APP_PORT=8080 docker compose up -d --build
-```
-
-Na Windows PowerShell:
-
-```powershell
-$env:APP_PORT="8080"; docker compose up -d --build
-```
-
-### Zatrzymanie i logi
-
-```bash
-docker compose logs -f fishing-forecast
-docker compose down
+curl http://localhost:8090/api/health
 ```
 
 ---
@@ -339,77 +353,12 @@ docker compose down
 ## Instalacja na telefonie (PWA)
 
 1. Otwórz `http://ADRES_IP_SERWERA:8090` w przeglądarce na telefonie.
-2. Android / Chrome: menu → **Dodaj do ekranu głównego**.
-3. iOS / Safari: przycisk udostępniania → **Dodaj do ekranu początkowego**.
+2. Zaloguj się — sesja trzyma się 90 dni.
+3. Android / Chrome: menu → **Dodaj do ekranu głównego**.
+   iOS / Safari: udostępnianie → **Dodaj do ekranu początkowego**.
 
-Po instalacji interfejs działa również bez internetu — aplikacja pokaże ostatnie
-zapisane dane wraz z ich wiekiem i wyraźnym komunikatem, że jesteś offline.
-Świeża prognoza wymaga połączenia.
-
-> Uwaga: część przeglądarek instaluje PWA tylko przez HTTPS albo przez `localhost`.
-> W sieci lokalnej po `http://` instalacja może być niedostępna — wtedy postaw przed
-> aplikacją reverse proxy z certyfikatem (np. Caddy) i wejdź po `https://`.
-
----
-
-## Reverse proxy z domeną
-
-```nginx
-server {
-    listen 80;
-    server_name ryby.example.pl;
-
-    location / {
-        proxy_pass http://127.0.0.1:8090;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-
-Dla publicznej domeny skonfiguruj HTTPS (Certbot, Caddy). Kontener nie przechowuje
-danych użytkowników ani certyfikatów.
-
----
-
-## Troubleshooting
-
-### Strona się otwiera, ale nie ma danych
-
-Dane pobiera **przeglądarka**, nie kontener — sprawdź internet na urządzeniu, z którego
-otwierasz aplikację. Przy chwilowym błędzie Open-Meteo aplikacja pokaże ostatnią poprawną
-odpowiedź i komunikat; użyj przycisku odświeżania w prawym górnym rogu.
-
-### Po aktualizacji widzę starą wersję
-
-To service worker. Odśwież stronę dwa razy albo w DevTools → Application → Service Workers
-kliknij **Unregister** i przeładuj.
-
-### „Brak danych o fali dla tego punktu”
-
-Marine API nie pokrywa wód śródlądowych ani punktów zbyt blisko brzegu. Dodaj łowisko
-morskie wskazane nieco dalej w stronę otwartej wody. Aplikacja świadomie nie podstawia
-w takiej sytuacji żadnych wartości.
-
-### Kontener nie startuje
-
-```bash
-docker compose config
-docker compose ps
-docker compose logs fishing-forecast
-```
-
-Jeśli port jest zajęty, ustaw inny przez `APP_PORT`.
-
-### Healthcheck ma status `unhealthy`
-
-```bash
-docker inspect --format='{{json .State.Health}}' fishing-forecast
-```
-
-Po zmianie konfiguracji wykonaj ponownie `docker compose up -d --build`.
+Część przeglądarek instaluje PWA tylko po HTTPS. W LAN-ie po `http://` opcja może
+być niedostępna — punkt 11 instrukcji wdrożenia opisuje, jak dodać HTTPS przez Caddy.
 
 ---
 
@@ -428,13 +377,19 @@ Po zmianie konfiguracji wykonaj ponownie `docker compose up -d --build`.
 
 Pełna lista ograniczeń jest też w aplikacji, w zakładce **„Dlaczego?”**.
 
+Pełna lista ograniczeń jest też w aplikacji, w zakładce **„Dlaczego?"**.
+
 ---
 
 ## Prywatność
 
-Brak konta, brak backendu, brak bazy danych, brak analityki. Wybrane łowisko, gatunek,
-aktywna zakładka, własne łowiska i cache ostatniej odpowiedzi zapisują się wyłącznie
-w `localStorage` przeglądarki. Jedyny ruch wychodzący to zapytania do Open-Meteo.
+Brak analityki, brak zewnętrznych skryptów, brak wysyłki danych gdziekolwiek poza
+Open-Meteo (i to wyłącznie współrzędnych łowiska, z serwera). Konta, łowiska
+i ustawienia leżą w Postgresie na Twoim serwerze. Hasła są haszowane bcryptem,
+tokeny sesji trzymane jako HMAC — sam wyciek bazy nie pozwala przejąć sesji.
+
+Aplikacja jest pomyślana dla sieci lokalnej lub VPN-u. Przed wystawieniem jej
+do internetu przeczytaj punkt 12 instrukcji wdrożenia.
 
 ---
 

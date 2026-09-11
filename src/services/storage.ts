@@ -1,157 +1,133 @@
-import type { FishingLocationType, Spot, SpeciesId, TabId } from '../types';
-import { DEFAULT_SPOTS, DEFAULT_SPOT_ID } from '../data/spots';
-import { DEFAULT_SPECIES_ID, isSpeciesId } from '../data/species';
+import type { Spot, SpeciesId, TabId, WeatherBundle } from '../types';
+import type { RemotePrefs, User } from '../api';
 
 /**
- * Cała trwała pamięć aplikacji to localStorage przeglądarki.
- * Nie ma konta, logowania, backendu ani bazy — dane nie opuszczają urządzenia.
+ * localStorage pełni od wersji 3 wyłącznie rolę lustra danych z serwera.
+ *
+ * Źródłem prawdy jest baza: łowiska i ustawienia należą do konta, nie do
+ * przeglądarki. Lokalna kopia służy do dwóch rzeczy: natychmiastowego
+ * pierwszego renderu (bez czekania na sieć) i pracy offline w trybie
+ * tylko do odczytu.
  */
 
+const PREFIX = 'ffk_v3_';
+
 const KEYS = {
-  customSpots: 'fishing_v2_custom_spots',
-  selectedSpot: 'fishing_v2_selected_spot',
-  species: 'fishing_v2_species',
-  tab: 'fishing_v2_tab',
-  lastResult: 'fishing_v2_last_result',
+  user: `${PREFIX}user`,
+  spots: `${PREFIX}spots`,
+  prefs: `${PREFIX}prefs`,
+  bundle: `${PREFIX}bundle_`,
 } as const;
 
-const LOCATION_TYPES: FishingLocationType[] = ['jezioro', 'rzeka', 'morze'];
+interface Envelope<T> {
+  data: T;
+  savedAt: number;
+}
 
-function readJson<T>(key: string): T | null {
+function read<T>(key: string): Envelope<T> | null {
   try {
     const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Envelope<T>;
+    if (!parsed || typeof parsed.savedAt !== 'number') return null;
+    return parsed;
   } catch {
     return null;
   }
 }
 
-function writeJson(key: string, value: unknown): void {
+function write<T>(key: string, data: T): void {
   try {
-    localStorage.setItem(key, JSON.stringify(value));
+    localStorage.setItem(key, JSON.stringify({ data, savedAt: Date.now() } satisfies Envelope<T>));
   } catch {
-    // localStorage może być wyłączony (tryb prywatny) — aplikacja działa dalej.
+    // Tryb prywatny albo brak miejsca — aplikacja działa dalej, tylko bez lustra.
   }
 }
 
-function isSpot(value: unknown): value is Spot {
-  if (!value || typeof value !== 'object') return false;
-  const s = value as Record<string, unknown>;
-  return (
-    typeof s.id === 'string' &&
-    typeof s.name === 'string' &&
-    typeof s.latitude === 'number' &&
-    Number.isFinite(s.latitude) &&
-    typeof s.longitude === 'number' &&
-    Number.isFinite(s.longitude) &&
-    typeof s.type === 'string' &&
-    LOCATION_TYPES.includes(s.type as FishingLocationType)
-  );
-}
-
-/** Łowiska dodane przez użytkownika. */
-export function loadCustomSpots(): Spot[] {
-  const raw = readJson<unknown>(KEYS.customSpots);
-  if (!Array.isArray(raw)) return [];
-  return raw.filter(isSpot).map((spot) => ({ ...spot, custom: true }));
-}
-
-export function saveCustomSpots(spots: Spot[]): void {
-  writeJson(KEYS.customSpots, spots);
-}
-
-/** Pełna lista łowisk: wbudowane + własne. */
-export function loadAllSpots(): Spot[] {
-  return [...DEFAULT_SPOTS, ...loadCustomSpots()];
-}
-
-/** Tworzy identyfikator dla nowego łowiska, unikalny w obrębie listy. */
-export function createSpotId(name: string, existing: Spot[]): string {
-  const base =
-    name
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[̀-ͯ]/g, '')
-      .replace(/ł/g, 'l')
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 32) || 'lowisko';
-
-  const taken = new Set(existing.map((s) => s.id));
-  if (!taken.has(base)) return base;
-  let counter = 2;
-  while (taken.has(`${base}-${counter}`)) counter++;
-  return `${base}-${counter}`;
-}
-
-export function loadSelectedSpotId(): string {
+function remove(key: string): void {
   try {
-    return localStorage.getItem(KEYS.selectedSpot) ?? DEFAULT_SPOT_ID;
-  } catch {
-    return DEFAULT_SPOT_ID;
-  }
-}
-
-export function saveSelectedSpotId(id: string): void {
-  try {
-    localStorage.setItem(KEYS.selectedSpot, id);
+    localStorage.removeItem(key);
   } catch {
     // ignorujemy
   }
 }
 
-export function loadSpeciesId(): SpeciesId {
-  try {
-    const raw = localStorage.getItem(KEYS.species);
-    return isSpeciesId(raw) ? raw : DEFAULT_SPECIES_ID;
-  } catch {
-    return DEFAULT_SPECIES_ID;
-  }
+// ---------------------------------------------------------------- konto
+
+export function cachedUser(): User | null {
+  return read<User>(KEYS.user)?.data ?? null;
 }
 
-export function saveSpeciesId(id: SpeciesId): void {
-  try {
-    localStorage.setItem(KEYS.species, id);
-  } catch {
-    // ignorujemy
-  }
+export function cacheUser(user: User | null): void {
+  if (user) write(KEYS.user, user);
+  else remove(KEYS.user);
 }
 
-const TABS: TabId[] = ['teraz', 'dzis', 'tydzien', 'dlaczego'];
+// ---------------------------------------------------------------- łowiska
 
-export function loadTab(): TabId {
-  try {
-    const raw = localStorage.getItem(KEYS.tab);
-    return TABS.includes(raw as TabId) ? (raw as TabId) : 'teraz';
-  } catch {
-    return 'teraz';
-  }
+export function cachedSpots(): Spot[] {
+  const entry = read<Spot[]>(KEYS.spots);
+  return Array.isArray(entry?.data) ? entry.data : [];
 }
 
-export function saveTab(tab: TabId): void {
-  try {
-    localStorage.setItem(KEYS.tab, tab);
-  } catch {
-    // ignorujemy
-  }
+export function cacheSpots(spots: Spot[]): void {
+  write(KEYS.spots, spots);
 }
 
-/** Skrót ostatniego wyniku — pokazywany od razu po otwarciu aplikacji. */
-export interface LastResultSnapshot {
-  spotId: string;
-  spotName: string;
-  speciesId: SpeciesId;
-  score: number;
-  label: string;
+// ---------------------------------------------------------------- ustawienia
+
+export function cachedPrefs(): RemotePrefs | null {
+  const entry = read<RemotePrefs>(KEYS.prefs);
+  if (!entry?.data) return null;
+  return entry.data;
+}
+
+export function cachePrefs(prefs: RemotePrefs): void {
+  write(KEYS.prefs, prefs);
+}
+
+// ---------------------------------------------------------------- pogoda
+
+/** Ile czasu lokalna kopia prognozy jest w ogóle użyteczna. */
+export const LOCAL_BUNDLE_TTL = 24 * 60 * 60 * 1000;
+
+export interface CachedBundle {
+  bundle: WeatherBundle;
   savedAt: number;
 }
 
-export function loadLastResult(): LastResultSnapshot | null {
-  const raw = readJson<LastResultSnapshot>(KEYS.lastResult);
-  if (!raw || typeof raw.score !== 'number' || typeof raw.spotId !== 'string') return null;
-  return raw;
+export function cachedBundle(spotId: string, species: SpeciesId): CachedBundle | null {
+  const entry = read<WeatherBundle>(`${KEYS.bundle}${spotId}_${species}`);
+  if (!entry) return null;
+  if (Date.now() - entry.savedAt > LOCAL_BUNDLE_TTL) {
+    remove(`${KEYS.bundle}${spotId}_${species}`);
+    return null;
+  }
+  if (!entry.data?.current || !Array.isArray(entry.data.hours)) return null;
+  return { bundle: entry.data, savedAt: entry.savedAt };
 }
 
-export function saveLastResult(snapshot: LastResultSnapshot): void {
-  writeJson(KEYS.lastResult, snapshot);
+export function cacheBundle(spotId: string, species: SpeciesId, bundle: WeatherBundle): void {
+  write(`${KEYS.bundle}${spotId}_${species}`, bundle);
+}
+
+// ---------------------------------------------------------------- porządki
+
+/** Czyści całe lustro — wołane przy wylogowaniu, żeby nie zostawiać cudzych danych. */
+export function clearLocalMirror(): void {
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(PREFIX)) keys.push(key);
+    }
+    keys.forEach(remove);
+  } catch {
+    // ignorujemy
+  }
+}
+
+/** Ostatnia aktywna zakładka trzymana lokalnie, żeby przełączenie było natychmiastowe. */
+export function cachedTab(): TabId | null {
+  return cachedPrefs()?.activeTab ?? null;
 }

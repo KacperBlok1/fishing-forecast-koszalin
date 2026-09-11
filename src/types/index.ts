@@ -25,16 +25,20 @@ export type DayPhase = 'noc' | 'świt' | 'poranek' | 'dzień' | 'popołudnie' | 
 // Łowiska
 // ------------------------------------------------------------
 
+/**
+ * Łowisko zapisane na koncie użytkownika. Rekord przychodzi z serwera —
+ * dzięki temu miejsce dodane na telefonie jest od razu dostępne na komputerze.
+ */
 export interface Spot {
   id: string;
   name: string;
   latitude: number;
   longitude: number;
   type: FishingLocationType;
-  /** Krótki opis widoczny na liście (tylko dla łowisk wbudowanych). */
-  note?: string;
-  /** true = łowisko dodane przez użytkownika (można je usunąć). */
-  custom?: boolean;
+  note: string | null;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface GeoLocation {
@@ -89,8 +93,10 @@ export interface MarineSeries {
 }
 
 export interface WeatherBundle {
-  /** Znacznik czasu pobrania (ms) — do pokazania wieku danych. */
+  /** Kiedy serwer pobrał te dane z Open-Meteo (ms) — do pokazania wieku danych. */
   fetchedAt: number;
+  /** true = Open-Meteo nie odpowiedziało i serwer oddał ostatnią poprawną odpowiedź. */
+  stale: boolean;
   timezone: string;
   /** Bieżące warunki z bloku `current` Open-Meteo. */
   current: HourPoint;

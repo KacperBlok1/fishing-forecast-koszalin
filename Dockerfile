@@ -1,24 +1,57 @@
-# Build stage
-FROM node:20-alpine AS build
+# syntax=docker/dockerfile:1
+
+# ============================================================
+# 1. Build frontendu (Vite → statyczne pliki)
+# ============================================================
+FROM node:20-alpine AS client-build
 WORKDIR /app
 
-COPY package.json yarn.lock* package-lock.json* pnpm-lock.yaml* ./
-RUN \
-  if [ -f yarn.lock ]; then yarn --frozen-lockfile; \
-  elif [ -f package-lock.json ]; then npm ci; \
-  elif [ -f pnpm-lock.yaml ]; then corepack enable pnpm && pnpm install --frozen-lockfile; \
-  else echo "No lockfile found." && exit 1; \
-  fi
+COPY package.json package-lock.json ./
+RUN npm ci
 
 COPY . .
 RUN npm run build
 
-# Production stage
-FROM nginx:alpine
+# ============================================================
+# 2. Build backendu (TypeScript → JavaScript)
+# ============================================================
+FROM node:20-alpine AS server-build
+WORKDIR /srv
+
+COPY server/package.json server/package-lock.json* ./
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+COPY server/ ./
+RUN npm run build
+
+# ============================================================
+# 3. Same zależności produkcyjne serwera
+#    (osobny etap, żeby do obrazu nie trafił TypeScript ani tsx)
+# ============================================================
+FROM node:20-alpine AS server-deps
+WORKDIR /srv
+
+COPY server/package.json server/package-lock.json* ./
+RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit=dev; fi
+
+# ============================================================
+# 4. Obraz uruchomieniowy
+# ============================================================
+FROM node:20-alpine
 RUN apk add --no-cache wget
 
-COPY --from=build /app/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+ENV NODE_ENV=production
+ENV CLIENT_DIR=/srv/client
+ENV PORT=8090
 
+WORKDIR /srv
+
+COPY --from=server-deps /srv/node_modules ./node_modules
+COPY --from=server-build /srv/dist ./dist
+COPY server/package.json ./package.json
+COPY --from=client-build /app/dist ./client
+
+USER node
 EXPOSE 8090
-CMD ["nginx", "-g", "daemon off;"]
+
+CMD ["node", "dist/index.js"]

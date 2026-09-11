@@ -2,13 +2,14 @@
  * Service worker aplikacji "Czy warto iść na ryby?".
  *
  * Zasada: cache'ujemy WYŁĄCZNIE powłokę interfejsu (HTML, JS, CSS, ikony,
- * obrazy). Dane pogodowe z Open-Meteo nigdy nie trafiają do cache SW —
- * prognoza zmienia się co godzinę, a pokazanie starej pod postacią świeżej
- * byłoby wprowadzaniem użytkownika w błąd. Za pamiętanie ostatniej poprawnej
- * odpowiedzi odpowiada localStorage aplikacji, który jawnie oznacza jej wiek.
+ * obrazy). Żądania do /api — prognoza, łowiska, sesja — są zawsze sieciowe.
+ * Pokazanie starej prognozy pod postacią świeżej byłoby wprowadzaniem
+ * użytkownika w błąd, a dane konta nie mają czego szukać w cache przeglądarki.
+ * Za pamiętanie ostatniej poprawnej odpowiedzi odpowiada serwer (Postgres)
+ * oraz localStorage aplikacji, który jawnie pokazuje wiek danych.
  */
 
-const CACHE_VERSION = 'v2';
+const CACHE_VERSION = 'v3';
 const SHELL_CACHE = `fishing-shell-${CACHE_VERSION}`;
 const ASSET_CACHE = `fishing-assets-${CACHE_VERSION}`;
 
@@ -55,8 +56,13 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(request.url);
 
-  // Wszystko spoza własnego origin (w tym Open-Meteo) idzie prosto do sieci.
+  // Wszystko spoza własnego origin idzie prosto do sieci.
   if (url.origin !== self.location.origin) return;
+
+  // API nigdy nie trafia do cache service workera: są tam dane pogodowe,
+  // stan konta i sesja. Cache'owaniem prognozy zajmuje się serwer (Postgres),
+  // a kopią na urządzenie — localStorage, który jawnie pokazuje wiek danych.
+  if (url.pathname.startsWith('/api/')) return;
 
   // Nawigacja: najpierw sieć, w razie braku — powłoka z cache.
   if (request.mode === 'navigate') {

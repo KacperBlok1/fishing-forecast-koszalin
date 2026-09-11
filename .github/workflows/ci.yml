@@ -7,7 +7,8 @@ on:
     branches: [main]
 
 jobs:
-  build:
+  client:
+    name: Frontend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,3 +32,37 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  server:
+    name: Backend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  docker:
+    name: Obraz Dockera
+    runs-on: ubuntu-latest
+    needs: [client, server]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t fishing-forecast:ci .

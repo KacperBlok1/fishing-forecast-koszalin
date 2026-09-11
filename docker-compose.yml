@@ -1,15 +1,55 @@
+# Dwa kontenery: baza i aplikacja.
+# Aplikacja serwuje frontend i API pod jednym adresem na porcie 8090.
+# Wszystkie hasła i sekrety pochodzą z pliku .env obok tego pliku.
+
 services:
-  fishing-forecast:
+  db:
+    image: postgres:17-alpine
+    container_name: fishing-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fishing}
+      POSTGRES_USER: ${POSTGRES_USER:-fishing}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Ustaw POSTGRES_PASSWORD w pliku .env}
+      # Polskie sortowanie i kodowanie od razu przy tworzeniu klastra.
+      POSTGRES_INITDB_ARGS: '--encoding=UTF8'
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    # Baza celowo NIE ma sekcji ports — jest dostępna wyłącznie dla kontenera
+    # aplikacji przez wewnętrzną sieć Dockera, nigdy z LAN-u.
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-fishing} -d ${POSTGRES_DB:-fishing}']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  app:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: fishing-forecast
-    ports:
-      - "${APP_PORT:-8090}:8090"
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-fishing}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-fishing}
+      SESSION_SECRET: ${SESSION_SECRET:?Ustaw SESSION_SECRET w pliku .env}
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      WEATHER_FRESH_MINUTES: ${WEATHER_FRESH_MINUTES:-15}
+      WEATHER_STALE_HOURS: ${WEATHER_STALE_HOURS:-24}
+      SESSION_DAYS: ${SESSION_DAYS:-90}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - '${APP_PORT:-8090}:8090'
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8090"]
+      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:8090/api/health']
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 5s
+      start_period: 40s
+
+volumes:
+  db-data:

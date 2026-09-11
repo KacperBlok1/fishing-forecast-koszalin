@@ -1,25 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { AppStatus, Spot, SpeciesId, TabId, WeatherBundle } from './types';
-import { OfflineError, fetchWeatherBundle } from './services/openMeteo';
-import { readCachedBundle, writeCachedBundle } from './services/cache';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { Spot, SpeciesId, TabId, WeatherBundle } from './types';
+import type { RemotePrefs, SpotInput } from './api';
+import { ApiError, prefsApi, spotsApi } from './api';
+import { fetchWeatherBundle } from './services/weather';
 import {
-  createSpotId,
-  loadAllSpots,
-  loadCustomSpots,
-  loadLastResult,
-  loadSelectedSpotId,
-  loadSpeciesId,
-  loadTab,
-  saveCustomSpots,
-  saveLastResult,
-  saveSelectedSpotId,
-  saveSpeciesId,
-  saveTab,
+  cacheBundle,
+  cachePrefs,
+  cacheSpots,
+  cachedBundle,
+  cachedPrefs,
+  cachedSpots,
 } from './services/storage';
+import { useSession } from './hooks/useSession';
 import { buildPlannerResult } from './utils/planner';
 import { isoDate } from './utils/time';
-import { DEFAULT_SPOTS } from './data/spots';
 
+import AuthScreen from './components/AuthScreen';
+import SpotPanel from './components/SpotPanel';
 import TopBar from './components/TopBar';
 import SpeciesBar from './components/SpeciesBar';
 import TabBar from './components/TabBar';
@@ -31,92 +28,176 @@ import HourlyChart from './components/HourlyChart';
 import DayList from './components/DayList';
 import MarinePanel from './components/MarinePanel';
 import WhyTab from './components/WhyTab';
-import SpotPicker from './components/SpotPicker';
 import StatusNotice from './components/StatusNotice';
 import Footer from './components/Footer';
 import { IconAlert } from './components/Icons';
 
-function App() {
-  const [spots, setSpots] = useState<Spot[]>(() => loadAllSpots());
-  const [selectedId, setSelectedId] = useState<string>(() => loadSelectedSpotId());
-  const [speciesId, setSpeciesId] = useState<SpeciesId>(() => loadSpeciesId());
-  const [tab, setTab] = useState<TabId>(() => loadTab());
-  const [pickerOpen, setPickerOpen] = useState(false);
+/** Po tym czasie od pobrania danych powrót do karty wywołuje odświeżenie. */
+const REFRESH_AFTER_MS = 10 * 60 * 1000;
 
+function App() {
+  const session = useSession();
+
+  // ---------------------------------------------------------------- stan danych
+
+  const [spots, setSpots] = useState<Spot[]>(() => cachedSpots());
+  const [prefs, setPrefs] = useState<RemotePrefs>(
+    () => cachedPrefs() ?? { species: 'szczupak', selectedSpotId: null, activeTab: 'teraz' }
+  );
   const [bundle, setBundle] = useState<WeatherBundle | null>(null);
-  const [status, setStatus] = useState<AppStatus>('loading');
-  const [error, setError] = useState<string | null>(null);
+  const [bundleSavedAt, setBundleSavedAt] = useState<number | null>(null);
+
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [loadingSpots, setLoadingSpots] = useState(false);
+  const [loadingWeather, setLoadingWeather] = useState(false);
+  const [weatherError, setWeatherError] = useState<string | null>(null);
   const [staleNote, setStaleNote] = useState<string | null>(null);
-  const [refreshing, setRefreshing] = useState(false);
   const [offline, setOffline] = useState<boolean>(
     () => typeof navigator !== 'undefined' && navigator.onLine === false
   );
 
-  const lastSnapshot = useMemo(() => loadLastResult(), []);
+  const pendingPrefs = useRef<Partial<RemotePrefs>>({});
+  const prefsTimer = useRef<number | null>(null);
 
-  const spot = useMemo(
-    () => spots.find((s) => s.id === selectedId) ?? spots[0] ?? DEFAULT_SPOTS[0],
-    [spots, selectedId]
-  );
+  const selectedSpot = useMemo(() => {
+    if (spots.length === 0) return null;
+    return spots.find((spot) => spot.id === prefs.selectedSpotId) ?? spots[0];
+  }, [spots, prefs.selectedSpotId]);
 
-  // ---------- pobieranie danych ----------
+  // ---------------------------------------------------------------- ustawienia
 
-  const load = useCallback(
-    async (force = false) => {
-      const cached = readCachedBundle(spot.latitude, spot.longitude, spot.type);
+  /**
+   * Zmiany ustawień zapisujemy z opóźnieniem — przeklikanie czterech gatunków
+   * pod rząd ma wysłać jedno żądanie, nie cztery.
+   */
+  const queuePrefs = useCallback((patch: Partial<RemotePrefs>) => {
+    setPrefs((current) => {
+      const next = { ...current, ...patch };
+      cachePrefs(next);
+      return next;
+    });
+    pendingPrefs.current = { ...pendingPrefs.current, ...patch };
+    if (prefsTimer.current !== null) window.clearTimeout(prefsTimer.current);
+    prefsTimer.current = window.setTimeout(() => {
+      const payload = pendingPrefs.current;
+      pendingPrefs.current = {};
+      prefsTimer.current = null;
+      void prefsApi.save(payload).catch(() => {
+        // Ustawienia to nie dane krytyczne — przy braku sieci zostają lokalnie.
+      });
+    }, 600);
+  }, []);
 
-      if (cached) {
-        setBundle(cached.bundle);
-        setStatus('success');
-        setError(null);
+  // ---------------------------------------------------------------- łowiska i ustawienia z serwera
+
+  const loadAccountData = useCallback(async (): Promise<void> => {
+    setLoadingSpots(true);
+    try {
+      const [serverSpots, serverPrefs] = await Promise.all([spotsApi.list(), prefsApi.get()]);
+      setSpots(serverSpots);
+      cacheSpots(serverSpots);
+      setPrefs((current) => {
+        // Lokalne zmiany, które jeszcze nie doleciały na serwer, mają pierwszeństwo.
+        const merged = { ...serverPrefs, ...pendingPrefs.current };
+        const next = merged.selectedSpotId ? merged : { ...merged, selectedSpotId: current.selectedSpotId };
+        cachePrefs(next);
+        return next;
+      });
+    } catch (error: unknown) {
+      if (error instanceof ApiError && error.isUnauthorized) {
+        await session.recheck();
+      }
+      // Przy błędzie sieci zostajemy na lokalnym lustrze — nie czyścimy listy.
+    } finally {
+      setLoadingSpots(false);
+    }
+  }, [session]);
+
+  useEffect(() => {
+    if (session.status !== 'authenticated') return;
+    void loadAccountData();
+  }, [session.status, loadAccountData]);
+
+  // ---------------------------------------------------------------- pogoda
+
+  const loadWeather = useCallback(
+    async (spot: Spot, species: SpeciesId, force = false): Promise<void> => {
+      const local = cachedBundle(spot.id, species);
+      if (local) {
+        setBundle(local.bundle);
+        setBundleSavedAt(local.savedAt);
+        setWeatherError(null);
       } else {
         setBundle(null);
-        setStatus('loading');
+        setBundleSavedAt(null);
       }
 
-      if (cached?.fresh && !force) {
-        setStaleNote(null);
-        return;
-      }
-
-      setRefreshing(true);
+      setLoadingWeather(true);
       setStaleNote(null);
       try {
-        const fresh = await fetchWeatherBundle(spot.latitude, spot.longitude, spot.type === 'morze');
-        writeCachedBundle(spot.latitude, spot.longitude, spot.type, fresh);
+        const fresh = await fetchWeatherBundle(spot, force);
         setBundle(fresh);
-        setStatus('success');
-        setError(null);
-      } catch (err: unknown) {
+        setBundleSavedAt(Date.now());
+        cacheBundle(spot.id, species, fresh);
+        setWeatherError(null);
+        setStaleNote(
+          fresh.stale
+            ? 'Open-Meteo chwilowo nie odpowiada — serwer pokazuje ostatnią poprawną prognozę.'
+            : null
+        );
+      } catch (error: unknown) {
         const message =
-          err instanceof OfflineError
-            ? 'Brak połączenia z internetem.'
-            : err instanceof Error
-              ? err.message
-              : 'Nieznany błąd pobierania danych.';
-        if (cached) {
-          setStaleNote(message);
+          error instanceof ApiError ? error.message : 'Nie udało się pobrać prognozy z serwera.';
+        if (error instanceof ApiError && error.isUnauthorized) {
+          await session.recheck();
+          return;
+        }
+        if (local) {
+          setStaleNote(`${message} Pokazuję ostatnie dane zapisane na tym urządzeniu.`);
         } else {
-          setStatus('error');
-          setError(message);
+          setWeatherError(message);
         }
       } finally {
-        setRefreshing(false);
+        setLoadingWeather(false);
       }
     },
-    [spot]
+    [session]
   );
 
-  // Pobranie danych przy starcie i przy każdej zmianie łowiska.
-  // eslint-disable-next-line react-hooks/set-state-in-effect -- stan ustawiany asynchronicznie po zakończeniu fetchu, nie w ciele efektu.
   useEffect(() => {
-    load();
-  }, [load]);
+    if (session.status !== 'authenticated' || !selectedSpot) return;
+    void loadWeather(selectedSpot, prefs.species);
+  }, [session.status, selectedSpot, prefs.species, loadWeather]);
 
-  // ---------- online / offline ----------
+  // ---------------------------------------------------------------- synchronizacja między urządzeniami
+
+  /**
+   * Powrót do karty odświeża listę łowisk i ustawienia. To dzięki temu miejsce
+   * dodane na telefonie pojawia się na komputerze bez przeładowania strony.
+   */
+  const refreshOnFocus = useCallback(() => {
+    if (document.visibilityState !== 'visible') return;
+    if (session.status !== 'authenticated') return;
+    void loadAccountData();
+    if (selectedSpot && (bundleSavedAt === null || Date.now() - bundleSavedAt > REFRESH_AFTER_MS)) {
+      void loadWeather(selectedSpot, prefs.species);
+    }
+  }, [session.status, loadAccountData, selectedSpot, prefs.species, loadWeather, bundleSavedAt]);
 
   useEffect(() => {
-    const goOnline = () => setOffline(false);
+    document.addEventListener('visibilitychange', refreshOnFocus);
+    window.addEventListener('focus', refreshOnFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', refreshOnFocus);
+      window.removeEventListener('focus', refreshOnFocus);
+    };
+  }, [refreshOnFocus]);
+
+  useEffect(() => {
+    const goOnline = () => {
+      setOffline(false);
+      refreshOnFocus();
+    };
     const goOffline = () => setOffline(true);
     window.addEventListener('online', goOnline);
     window.addEventListener('offline', goOffline);
@@ -124,219 +205,259 @@ function App() {
       window.removeEventListener('online', goOnline);
       window.removeEventListener('offline', goOffline);
     };
-  }, []);
+  }, [refreshOnFocus]);
 
-  // ---------- trwałe ustawienia ----------
+  // ---------------------------------------------------------------- operacje na łowiskach
 
-  useEffect(() => {
-    saveSelectedSpotId(selectedId);
-  }, [selectedId]);
-  useEffect(() => {
-    saveSpeciesId(speciesId);
-  }, [speciesId]);
-  useEffect(() => {
-    saveTab(tab);
-  }, [tab]);
-
-  // ---------- wynik ----------
-
-  const result = useMemo(
-    () => (bundle ? buildPlannerResult(bundle, spot, speciesId) : null),
-    [bundle, spot, speciesId]
+  const handleCreateSpot = useCallback(
+    async (input: SpotInput): Promise<void> => {
+      const created = await spotsApi.create(input);
+      setSpots((current) => {
+        const next = [...current, created];
+        cacheSpots(next);
+        return next;
+      });
+      queuePrefs({ selectedSpotId: created.id });
+      setPanelOpen(false);
+    },
+    [queuePrefs]
   );
 
-  useEffect(() => {
-    if (!result) return;
-    saveLastResult({
-      spotId: result.spotId,
-      spotName: result.spotName,
-      speciesId: result.speciesId,
-      score: result.now.score,
-      label: result.now.label,
-      savedAt: Date.now(),
-    });
-  }, [result]);
+  const handleDeleteSpot = useCallback(
+    async (spot: Spot): Promise<void> => {
+      await spotsApi.remove(spot.id);
+      setSpots((current) => {
+        const next = current.filter((item) => item.id !== spot.id);
+        cacheSpots(next);
+        if (prefs.selectedSpotId === spot.id) {
+          queuePrefs({ selectedSpotId: next[0]?.id ?? null });
+        }
+        return next;
+      });
+    },
+    [prefs.selectedSpotId, queuePrefs]
+  );
+
+  const handleSelectSpot = useCallback(
+    (spot: Spot) => {
+      queuePrefs({ selectedSpotId: spot.id });
+      setPanelOpen(false);
+    },
+    [queuePrefs]
+  );
+
+  // ---------------------------------------------------------------- wynik
+
+  const result = useMemo(
+    () => (bundle && selectedSpot ? buildPlannerResult(bundle, selectedSpot, prefs.species) : null),
+    [bundle, selectedSpot, prefs.species]
+  );
 
   const today = bundle ? isoDate(bundle.current.time) : null;
 
   const todayScores = useMemo(
-    () => (result && today ? result.hourly.filter((h) => isoDate(h.time) === today) : []),
+    () => (result && today ? result.hourly.filter((hour) => isoDate(hour.time) === today) : []),
     [result, today]
   );
 
   const todayHours = useMemo(
-    () => (bundle && today ? bundle.hours.filter((h) => isoDate(h.time) === today) : []),
+    () => (bundle && today ? bundle.hours.filter((hour) => isoDate(hour.time) === today) : []),
     [bundle, today]
   );
 
-  // ---------- zarządzanie łowiskami ----------
+  // ---------------------------------------------------------------- render
 
-  const handleAddSpot = (draft: Omit<Spot, 'id'>) => {
-    const id = createSpotId(draft.name, spots);
-    const custom = loadCustomSpots();
-    const next: Spot = { ...draft, id, custom: true };
-    saveCustomSpots([...custom, next]);
-    setSpots([...DEFAULT_SPOTS, ...custom, next]);
-    setSelectedId(id);
-    setPickerOpen(false);
-  };
+  if (session.status === 'checking') {
+    return (
+      <div className="boot">
+        <div className="boot-spinner" aria-hidden="true" />
+        <p>Sprawdzam sesję…</p>
+      </div>
+    );
+  }
 
-  const handleRemoveSpot = (id: string) => {
-    const custom = loadCustomSpots().filter((s) => s.id !== id);
-    saveCustomSpots(custom);
-    const nextSpots = [...DEFAULT_SPOTS, ...custom];
-    setSpots(nextSpots);
-    if (selectedId === id) setSelectedId(nextSpots[0].id);
-  };
+  if (session.status === 'guest' || !session.user) {
+    return <AuthScreen onAuthenticated={session.signIn} />;
+  }
 
-  const handleSelectSpot = (next: Spot) => {
-    setSelectedId(next.id);
-    setPickerOpen(false);
-  };
-
-  // ---------- widok ----------
-
-  const showSkeleton = status === 'loading' && !result;
+  const tab = prefs.activeTab;
+  const showSkeleton = loadingWeather && !result;
 
   return (
-    <div className="app">
-      <TopBar
-        spot={spot}
-        fetchedAt={result?.fetchedAt ?? null}
-        refreshing={refreshing}
-        offline={offline}
-        onOpenPicker={() => setPickerOpen(true)}
-        onRefresh={() => load(true)}
+    <div className="shell">
+      <SpotPanel
+        spots={spots}
+        selectedId={selectedSpot?.id ?? null}
+        user={session.user}
+        open={panelOpen}
+        busy={loadingSpots}
+        onClose={() => setPanelOpen(false)}
+        onSelect={handleSelectSpot}
+        onCreate={handleCreateSpot}
+        onDelete={handleDeleteSpot}
+        onLogout={() => void session.signOut()}
       />
 
-      <SpeciesBar value={speciesId} locationType={spot.type} onChange={setSpeciesId} />
-      <TabBar active={tab} onChange={setTab} />
+      <div className="main">
+        <TopBar
+          spot={selectedSpot}
+          fetchedAt={result?.fetchedAt ?? null}
+          refreshing={loadingWeather}
+          offline={offline || session.offlineIdentity}
+          onOpenPanel={() => setPanelOpen(true)}
+          onRefresh={() => {
+            if (selectedSpot) void loadWeather(selectedSpot, prefs.species, true);
+          }}
+        />
 
-      <main className="content" id={`panel-${tab}`} role="tabpanel" aria-labelledby={`tab-${tab}`}>
-        {offline && (
-          <StatusNotice
-            kind="offline"
-            title="Jesteś offline"
-            message={
-              result
-                ? 'Pokazuję ostatnie zapisane dane. Prognoza odświeży się, gdy wróci internet.'
-                : 'Nie mam zapisanych danych dla tego łowiska. Połącz się z siecią, żeby pobrać prognozę.'
-            }
-            onRetry={() => load(true)}
-            retryLabel="Sprawdź ponownie"
-          />
-        )}
+        <SpeciesBar
+          value={prefs.species}
+          locationType={selectedSpot?.type ?? 'jezioro'}
+          onChange={(species) => queuePrefs({ species })}
+        />
 
-        {staleNote && !offline && (
-          <StatusNotice
-            kind="stale"
-            title="Nie udało się odświeżyć danych"
-            message={`${staleNote} Pokazuję ostatnią poprawną odpowiedź z pamięci urządzenia.`}
-            onRetry={() => load(true)}
-          />
-        )}
+        <TabBar active={tab} onChange={(next: TabId) => queuePrefs({ activeTab: next })} />
 
-        {showSkeleton && (
-          <div className="skeleton-wrap" aria-busy="true" aria-live="polite">
-            <div className="skeleton skeleton-hero" />
-            <div className="skeleton skeleton-card" />
-            <div className="skeleton skeleton-card" />
-            <p className="muted center">Pobieram prognozę dla: {spot.name}…</p>
-            {lastSnapshot && (
-              <p className="muted center">
-                Ostatnio zapisany wynik: {lastSnapshot.spotName} — {lastSnapshot.score}/100 ({lastSnapshot.label}).
-              </p>
-            )}
-          </div>
-        )}
-
-        {status === 'error' && !result && (
-          <StatusNotice
-            kind="error"
-            title="Nie udało się pobrać prognozy"
-            message={`${error ?? 'Nieznany błąd.'} Sprawdź połączenie i spróbuj ponownie — dane pobierane są bezpośrednio z Open-Meteo przez Twoją przeglądarkę.`}
-            onRetry={() => load(true)}
-          />
-        )}
-
-        {result && tab === 'teraz' && (
-          <>
-            <ScoreHero
-              spot={spot}
-              score={result.now}
-              hour={result.nowHour}
-              sunrise={result.today?.sunrise ?? ''}
-              sunset={result.today?.sunset ?? ''}
+        <main className="content" id={`panel-${tab}`} role="tabpanel" aria-labelledby={`tab-${tab}`}>
+          {(offline || session.offlineIdentity) && (
+            <StatusNotice
+              kind="offline"
+              title={session.offlineIdentity ? 'Brak kontaktu z serwerem' : 'Jesteś offline'}
+              message={
+                result
+                  ? 'Pokazuję dane zapisane na tym urządzeniu. Dodawanie i usuwanie łowisk wróci razem z połączeniem.'
+                  : 'Nie mam zapisanych danych dla tego łowiska. Połącz się z siecią serwera, żeby pobrać prognozę.'
+              }
+              onRetry={() => void session.recheck()}
+              retryLabel="Sprawdź ponownie"
             />
+          )}
 
-            {result.now.warnings.map((warning) => (
-              <div key={warning} className="notice notice-warn">
-                <IconAlert size={18} />
-                <div>
-                  <p>{warning}</p>
+          {staleNote && !offline && (
+            <StatusNotice
+              kind="stale"
+              title="Dane mogą być nieaktualne"
+              message={staleNote}
+              onRetry={() => {
+                if (selectedSpot) void loadWeather(selectedSpot, prefs.species, true);
+              }}
+            />
+          )}
+
+          {spots.length === 0 && !loadingSpots && (
+            <StatusNotice
+              kind="info"
+              title="Nie masz jeszcze łowisk"
+              message="Dodaj pierwsze miejsce — po nazwie miejscowości albo po współrzędnych. Będzie dostępne na każdym urządzeniu, na którym się zalogujesz."
+              onRetry={() => setPanelOpen(true)}
+              retryLabel="Dodaj łowisko"
+            />
+          )}
+
+          {showSkeleton && (
+            <div className="skeleton-wrap" aria-busy="true" aria-live="polite">
+              <div className="skeleton skeleton-hero" />
+              <div className="skeleton skeleton-card" />
+              <div className="skeleton skeleton-card" />
+              <p className="muted center">Pobieram prognozę{selectedSpot ? ` dla: ${selectedSpot.name}` : ''}…</p>
+            </div>
+          )}
+
+          {weatherError && !result && (
+            <StatusNotice
+              kind="error"
+              title="Nie udało się pobrać prognozy"
+              message={weatherError}
+              onRetry={() => {
+                if (selectedSpot) void loadWeather(selectedSpot, prefs.species, true);
+              }}
+            />
+          )}
+
+          {result && selectedSpot && tab === 'teraz' && (
+            <>
+              <ScoreHero
+                spot={selectedSpot}
+                score={result.now}
+                hour={result.nowHour}
+                sunrise={result.today?.sunrise ?? ''}
+                sunset={result.today?.sunset ?? ''}
+              />
+
+              {result.now.warnings.map((warning) => (
+                <div key={warning} className="notice notice-warn">
+                  <IconAlert size={18} />
+                  <div>
+                    <p>{warning}</p>
+                  </div>
+                </div>
+              ))}
+
+              <div className="grid-2">
+                <FactorList score={result.now} />
+                <div className="grid-stack">
+                  {selectedSpot.type === 'morze' && (
+                    <MarinePanel
+                      marine={result.marine}
+                      marineRequested={result.marineRequested}
+                      marineError={result.marineError}
+                    />
+                  )}
+                  <TrendCard trend={result.trend} />
+                  <WindowList
+                    windows={result.today?.windows ?? []}
+                    title="Najbliższe okna"
+                    emptyText="Na dziś nie ma już pełnych godzin do zaplanowania."
+                  />
                 </div>
               </div>
-            ))}
+            </>
+          )}
 
-            <FactorList score={result.now} />
-            {spot.type === 'morze' && (
-              <MarinePanel
-                marine={result.marine}
-                marineRequested={result.marineRequested}
-                marineError={result.marineError}
-              />
-            )}
-            <TrendCard trend={result.trend} />
-          </>
-        )}
+          {result && selectedSpot && tab === 'dzis' && (
+            <>
+              <section className="card highlight">
+                <h2 className="card-title">Najlepsze dziś</h2>
+                {result.today && result.today.windows.length > 0 ? (
+                  <p className="best-today">
+                    Ocena dzisiejszego dnia: <strong>{result.today.score}/100</strong> ({result.today.label}).
+                    Najlepsze okno ma <strong>{result.today.bestWindowScore}/100</strong> — celuj w{' '}
+                    <strong>
+                      {result.today.windows[0].start.slice(11, 16)}–{result.today.windows[0].end.slice(11, 16)}
+                    </strong>
+                    .
+                  </p>
+                ) : (
+                  <p className="muted">
+                    Na dziś nie ma już pełnych godzin do zaplanowania — sprawdź zakładkę „7 dni”.
+                  </p>
+                )}
+              </section>
 
-        {result && tab === 'dzis' && (
-          <>
-            <section className="card highlight">
-              <h2 className="card-title">Najlepsze dziś</h2>
-              {result.today && result.today.windows.length > 0 ? (
-                <p className="best-today">
-                  Ocena dzisiejszego dnia: <strong>{result.today.score}/100</strong> ({result.today.label}).
-                  Najlepsze okno ma <strong>{result.today.bestWindowScore}/100</strong> — celuj w{' '}
-                  <strong>
-                    {result.today.windows[0].start.slice(11, 16)}–{result.today.windows[0].end.slice(11, 16)}
-                  </strong>
-                  .
-                </p>
-              ) : (
-                <p className="muted">Na dziś nie ma już pełnych godzin do zaplanowania — sprawdź zakładkę „7 dni”.</p>
-              )}
-            </section>
+              <div className="grid-2">
+                <WindowList windows={result.today?.windows ?? []} />
+                {selectedSpot.type === 'morze' ? (
+                  <MarinePanel
+                    marine={result.marine}
+                    marineRequested={result.marineRequested}
+                    marineError={result.marineError}
+                  />
+                ) : (
+                  <TrendCard trend={result.trend} />
+                )}
+              </div>
 
-            <WindowList windows={result.today?.windows ?? []} />
-            <HourlyChart scores={todayScores} hours={todayHours} currentTime={result.nowHour.time} />
-            {spot.type === 'morze' && (
-              <MarinePanel
-                marine={result.marine}
-                marineRequested={result.marineRequested}
-                marineError={result.marineError}
-              />
-            )}
-          </>
-        )}
+              <HourlyChart scores={todayScores} hours={todayHours} currentTime={result.nowHour.time} />
+            </>
+          )}
 
-        {result && tab === 'tydzien' && <DayList days={result.days} today={today ?? ''} />}
+          {result && tab === 'tydzien' && <DayList days={result.days} today={today ?? ''} />}
 
-        {tab === 'dlaczego' && <WhyTab />}
-      </main>
+          {tab === 'dlaczego' && <WhyTab />}
+        </main>
 
-      <Footer />
-
-      {pickerOpen && (
-        <SpotPicker
-          spots={spots}
-          selectedId={spot.id}
-          onSelect={handleSelectSpot}
-          onAdd={handleAddSpot}
-          onRemove={handleRemoveSpot}
-          onClose={() => setPickerOpen(false)}
-        />
-      )}
+        <Footer />
+      </div>
     </div>
   );
 }
