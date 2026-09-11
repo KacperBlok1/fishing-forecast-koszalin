@@ -1,27 +1,71 @@
-import type { OpenMeteoResponse, MarineResponse } from '../types';
+import type { DayPoint, HourPoint, MarineSeries, WeatherBundle } from '../types';
 
-const BASE_URL = 'https://api.open-meteo.com/v1';
-const MARINE_URL = 'https://marine-api.open-meteo.com/v1';
+const FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
+const MARINE_URL = 'https://marine-api.open-meteo.com/v1/marine';
 
-const COMMON_PARAMS = [
-  'current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m,weather_code,is_day',
-  'hourly=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,weather_code',
-  'daily=temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max,wind_direction_10m_dominant,weather_code,sunrise,sunset',
-  'timezone=Europe%2FWarsaw',
-  'forecast_days=3',
-  'past_days=3',
-].join('&');
+/** Ile dni wstecz pobieramy (potrzebne do trendu i zmiany ciśnienia 24 h). */
+export const PAST_DAYS = 3;
+/** Ile dni prognozy pobieramy. */
+export const FORECAST_DAYS = 7;
 
-const DEFAULT_TIMEOUT_MS = 15000;
+const TIMEOUT_MS = 15000;
 const MAX_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 600;
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+const HOURLY_FIELDS = [
+  'temperature_2m',
+  'apparent_temperature',
+  'relative_humidity_2m',
+  'precipitation',
+  'precipitation_probability',
+  'cloud_cover',
+  'pressure_msl',
+  'wind_speed_10m',
+  'wind_direction_10m',
+  'wind_gusts_10m',
+  'weather_code',
+  'is_day',
+].join(',');
+
+const CURRENT_FIELDS = [
+  'temperature_2m',
+  'apparent_temperature',
+  'relative_humidity_2m',
+  'precipitation',
+  'cloud_cover',
+  'pressure_msl',
+  'wind_speed_10m',
+  'wind_direction_10m',
+  'wind_gusts_10m',
+  'weather_code',
+  'is_day',
+].join(',');
+
+const DAILY_FIELDS = [
+  'sunrise',
+  'sunset',
+  'temperature_2m_max',
+  'temperature_2m_min',
+  'precipitation_sum',
+  'wind_speed_10m_max',
+  'wind_gusts_10m_max',
+  'weather_code',
+].join(',');
+
+const MARINE_FIELDS = ['wave_height', 'wave_direction', 'wave_period', 'sea_surface_temperature'].join(',');
+/** Zestaw minimalny — używany, gdy pełne zapytanie zostanie odrzucone (np. brak SST dla punktu). */
+const MARINE_FIELDS_FALLBACK = ['wave_height', 'wave_direction', 'wave_period'].join(',');
+
+/** Błąd oznaczający brak połączenia z siecią. */
+export class OfflineError extends Error {
+  constructor() {
+    super('Brak połączenia z internetem.');
+    this.name = 'OfflineError';
+  }
 }
 
-/** Błąd HTTP z API — niesie status, żeby dało się odróżnić błędy przejściowe od trwałych. */
-class HttpStatusError extends Error {
+/** Błąd HTTP z API — niesie status, żeby odróżnić błędy przejściowe od trwałych. */
+export class HttpStatusError extends Error {
   status: number;
   constructor(message: string, status: number) {
     super(message);
@@ -30,199 +74,263 @@ class HttpStatusError extends Error {
   }
 }
 
-/**
- * Pobiera JSON spod danego URL, z limitem czasu i automatycznym ponawianiem
- * (z rosnącym opóźnieniem) przy błędach sieciowych, timeoutach i błędach 5xx.
- * Błędy 4xx (np. zła lokalizacja) nie są ponawiane, bo nie są przejściowe.
- */
-async function fetchJsonWithRetry(
-  url: string,
-  errorLabel: string,
-  opts: { timeoutMs?: number; retries?: number } = {}
-): Promise<any> {
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const retries = opts.retries ?? MAX_RETRIES;
-  let lastError: unknown;
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-  for (let attempt = 0; attempt <= retries; attempt++) {
+function isOffline(): boolean {
+  return typeof navigator !== 'undefined' && navigator.onLine === false;
+}
+
+/**
+ * Pobiera JSON z limitem czasu i ponowieniami przy błędach sieciowych oraz 5xx.
+ * Błędy 4xx nie są ponawiane — nie są przejściowe.
+ */
+async function fetchJson(url: string, label: string): Promise<Record<string, unknown>> {
+  if (isOffline()) throw new OfflineError();
+
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
     try {
       const response = await fetch(url, { signal: controller.signal });
       if (!response.ok) {
-        throw new HttpStatusError(`${errorLabel} zwróciło błąd: ${response.status}`, response.status);
+        throw new HttpStatusError(`${label}: błąd ${response.status}`, response.status);
       }
-      return await response.json();
-    } catch (err) {
-      lastError = err;
-      const status = err instanceof HttpStatusError ? err.status : undefined;
-      // Brak statusu = błąd sieci/timeout — warto ponowić. Błędy 5xx też są zwykle przejściowe.
+      return (await response.json()) as Record<string, unknown>;
+    } catch (error) {
+      lastError = error;
+      const status = error instanceof HttpStatusError ? error.status : undefined;
       const retryable = status === undefined || status >= 500;
-      if (!retryable || attempt === retries) {
-        throw err instanceof Error ? err : new Error(String(err));
+      if (!retryable || attempt === MAX_RETRIES) {
+        if (isOffline()) throw new OfflineError();
+        throw error instanceof Error ? error : new Error(String(error));
       }
       await sleep(RETRY_BASE_DELAY_MS * 2 ** attempt);
     } finally {
       clearTimeout(timeoutId);
     }
   }
-  throw lastError;
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
-/**
- * Oblicza średnią temperaturę i średnie ciśnienie dla każdego dnia z danych hourly.
- * Używane zamiast nieistniejących pól daily API (temperature_2m_mean i pressure_msl_mean).
- */
-function computeDailyFromHourly(
-  hourlyTime: string[],
-  hourlyTemp2m: number[],
-  hourlyPressure: number[]
-): { temperatureMean: number[]; pressureMean: number[] } {
-  const dailyTempMap = new Map<string, number[]>();
-  const dailyPresMap = new Map<string, number[]>();
+function numberAt(source: unknown, index: number): number {
+  if (!Array.isArray(source)) return Number.NaN;
+  const value = source[index];
+  return typeof value === 'number' && Number.isFinite(value) ? value : Number.NaN;
+}
 
-  for (let i = 0; i < hourlyTime.length; i++) {
-    const date = hourlyTime[i].split('T')[0];
-    if (!dailyTempMap.has(date)) dailyTempMap.set(date, []);
-    if (!dailyPresMap.has(date)) dailyPresMap.set(date, []);
-    dailyTempMap.get(date)!.push(hourlyTemp2m[i] ?? 0);
-    dailyPresMap.get(date)!.push(hourlyPressure[i] ?? 0);
+function nullableNumberAt(source: unknown, index: number): number | null {
+  if (!Array.isArray(source)) return null;
+  const value = source[index];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function stringAt(source: unknown, index: number, fallback: string): string {
+  if (!Array.isArray(source)) return fallback;
+  const value = source[index];
+  return typeof value === 'string' ? value : fallback;
+}
+
+function parseHours(hourly: Record<string, unknown> | undefined): HourPoint[] {
+  if (!hourly || !Array.isArray(hourly.time)) return [];
+  const times = hourly.time as unknown[];
+  const result: HourPoint[] = [];
+  for (let i = 0; i < times.length; i++) {
+    const time = times[i];
+    if (typeof time !== 'string') continue;
+    const temperature = numberAt(hourly.temperature_2m, i);
+    if (!Number.isFinite(temperature)) continue;
+    result.push({
+      time,
+      temperature,
+      apparentTemperature: numberAt(hourly.apparent_temperature, i),
+      humidity: numberAt(hourly.relative_humidity_2m, i),
+      precipitation: Number.isFinite(numberAt(hourly.precipitation, i)) ? numberAt(hourly.precipitation, i) : 0,
+      precipitationProbability: nullableNumberAt(hourly.precipitation_probability, i),
+      cloudCover: Number.isFinite(numberAt(hourly.cloud_cover, i)) ? numberAt(hourly.cloud_cover, i) : 50,
+      pressure: numberAt(hourly.pressure_msl, i),
+      windSpeed: Number.isFinite(numberAt(hourly.wind_speed_10m, i)) ? numberAt(hourly.wind_speed_10m, i) : 0,
+      windDirection: Number.isFinite(numberAt(hourly.wind_direction_10m, i)) ? numberAt(hourly.wind_direction_10m, i) : 0,
+      windGusts: Number.isFinite(numberAt(hourly.wind_gusts_10m, i)) ? numberAt(hourly.wind_gusts_10m, i) : 0,
+      weatherCode: Number.isFinite(numberAt(hourly.weather_code, i)) ? numberAt(hourly.weather_code, i) : 0,
+      isDay: Number.isFinite(numberAt(hourly.is_day, i)) ? numberAt(hourly.is_day, i) : 1,
+    });
   }
-
-  const temperatureMean = Array.from(dailyTempMap.values()).map(
-    arr => arr.reduce((a, b) => a + b, 0) / arr.length
-  );
-  const pressureMean = Array.from(dailyPresMap.values()).map(
-    arr => arr.reduce((a, b) => a + b, 0) / arr.length
-  );
-
-  return { temperatureMean, pressureMean };
+  return result;
 }
 
-function parseDailyBlock(data: any) {
-  if (!data.daily?.time) return;
-  // Open-Meteo nie udostępnia dziennych średnich temperatury i ciśnienia,
-  // więc wyliczamy je z godzinowych wartości.
-  const { temperatureMean, pressureMean } = data.hourly?.time && data.hourly?.temperature_2m && data.hourly?.pressure_msl
-    ? computeDailyFromHourly(data.hourly.time, data.hourly.temperature_2m, data.hourly.pressure_msl)
-    : { temperatureMean: [] as number[], pressureMean: [] as number[] };
+function parseDays(daily: Record<string, unknown> | undefined): DayPoint[] {
+  if (!daily || !Array.isArray(daily.time)) return [];
+  const times = daily.time as unknown[];
+  const result: DayPoint[] = [];
+  for (let i = 0; i < times.length; i++) {
+    const date = times[i];
+    if (typeof date !== 'string') continue;
+    result.push({
+      date,
+      sunrise: stringAt(daily.sunrise, i, `${date}T05:00`),
+      sunset: stringAt(daily.sunset, i, `${date}T20:00`),
+      temperatureMax: numberAt(daily.temperature_2m_max, i),
+      temperatureMin: numberAt(daily.temperature_2m_min, i),
+      precipitationSum: Number.isFinite(numberAt(daily.precipitation_sum, i)) ? numberAt(daily.precipitation_sum, i) : 0,
+      windSpeedMax: numberAt(daily.wind_speed_10m_max, i),
+      windGustsMax: numberAt(daily.wind_gusts_10m_max, i),
+      weatherCode: Number.isFinite(numberAt(daily.weather_code, i)) ? numberAt(daily.weather_code, i) : 0,
+    });
+  }
+  return result;
+}
 
-  data.daily = {
-    time: data.daily.time,
-    temperatureMax: data.daily.temperature_2m_max,
-    temperatureMin: data.daily.temperature_2m_min,
-    temperatureMean,
-    precipitationSum: data.daily.precipitation_sum,
-    windSpeedMax: data.daily.wind_speed_10m_max,
-    windDirectionDominant: data.daily.wind_direction_10m_dominant,
-    pressureMean,
-    weatherCode: data.daily.weather_code,
+function parseCurrent(current: Record<string, unknown> | undefined, fallback: HourPoint | undefined): HourPoint | null {
+  if (!current || typeof current.time !== 'string') return fallback ?? null;
+  const num = (key: string, alt: number): number => {
+    const value = current[key];
+    return typeof value === 'number' && Number.isFinite(value) ? value : alt;
+  };
+  return {
+    time: current.time,
+    temperature: num('temperature_2m', fallback?.temperature ?? Number.NaN),
+    apparentTemperature: num('apparent_temperature', fallback?.apparentTemperature ?? Number.NaN),
+    humidity: num('relative_humidity_2m', fallback?.humidity ?? Number.NaN),
+    precipitation: num('precipitation', 0),
+    precipitationProbability: fallback?.precipitationProbability ?? null,
+    cloudCover: num('cloud_cover', 50),
+    pressure: num('pressure_msl', fallback?.pressure ?? Number.NaN),
+    windSpeed: num('wind_speed_10m', 0),
+    windDirection: num('wind_direction_10m', 0),
+    windGusts: num('wind_gusts_10m', 0),
+    weatherCode: num('weather_code', 0),
+    isDay: num('is_day', 1),
   };
 }
 
+function parseMarine(data: Record<string, unknown>): MarineSeries | null {
+  const hourly = data.hourly as Record<string, unknown> | undefined;
+  if (!hourly || !Array.isArray(hourly.time)) return null;
+  const time = (hourly.time as unknown[]).filter((t): t is string => typeof t === 'string');
+  if (time.length === 0) return null;
+
+  const column = (key: string): (number | null)[] =>
+    time.map((_, i) => nullableNumberAt(hourly[key], i));
+
+  const waveHeight = column('wave_height');
+  if (waveHeight.every((v) => v === null)) return null;
+
+  return {
+    time,
+    waveHeight,
+    waveDirection: column('wave_direction'),
+    wavePeriod: column('wave_period'),
+    seaSurfaceTemperature: column('sea_surface_temperature'),
+  };
+}
+
+/** Buduje URL prognozy — wydzielone, żeby dało się je przetestować bez sieci. */
+export function buildForecastUrl(latitude: number, longitude: number): string {
+  const params = new URLSearchParams({
+    latitude: latitude.toFixed(4),
+    longitude: longitude.toFixed(4),
+    current: CURRENT_FIELDS,
+    hourly: HOURLY_FIELDS,
+    daily: DAILY_FIELDS,
+    timezone: 'auto',
+    past_days: String(PAST_DAYS),
+    forecast_days: String(FORECAST_DAYS),
+    wind_speed_unit: 'kmh',
+  });
+  return `${FORECAST_URL}?${params.toString()}`;
+}
+
+export function buildMarineUrl(latitude: number, longitude: number, minimal = false): string {
+  const params = new URLSearchParams({
+    latitude: latitude.toFixed(4),
+    longitude: longitude.toFixed(4),
+    hourly: minimal ? MARINE_FIELDS_FALLBACK : MARINE_FIELDS,
+    timezone: 'auto',
+    past_days: '1',
+    forecast_days: String(FORECAST_DAYS),
+  });
+  return `${MARINE_URL}?${params.toString()}`;
+}
+
 /**
- * Pobierz bieżącą pogodę, prognozę godzinową i dane dzienne.
+ * Dane morskie. Gdy pełne zapytanie zostanie odrzucone przez API (np. dla danego
+ * punktu nie ma temperatury powierzchni morza), ponawiamy je z samym zestawem
+ * falowym, zamiast tracić całą informację o fali.
  */
-export async function fetchWeatherData(
+async function fetchMarine(
   latitude: number,
   longitude: number
-): Promise<OpenMeteoResponse> {
-  const url = `${BASE_URL}/forecast?${COMMON_PARAMS}&latitude=${latitude}&longitude=${longitude}`;
-  const data = await fetchJsonWithRetry(url, 'Open-Meteo API');
-
-  if (!data.current) {
-    throw new Error('Odpowiedź Open-Meteo API nie zawiera danych bieżącej pogody (current)');
-  }
-
-  // Parse current weather
-  data.current = {
-    time: data.current.time,
-    temperature: data.current.temperature_2m,
-    feelsLike: data.current.apparent_temperature,
-    relativeHumidity: data.current.relative_humidity_2m,
-    precipitation: data.current.precipitation,
-    cloudCover: data.current.cloud_cover,
-    pressure: data.current.pressure_msl,
-    windSpeed: data.current.wind_speed_10m,
-    windDirection: data.current.wind_direction_10m,
-    windGusts: data.current.wind_gusts_10m,
-    weatherCode: data.current.weather_code,
-    isDay: data.current.is_day,
-    sunrise: data.daily?.sunrise?.[0] ?? '--',
-    sunset: data.daily?.sunset?.[0] ?? '--',
+): Promise<{ series: MarineSeries | null; error: string | null }> {
+  const attempt = async (minimal: boolean) => {
+    const data = await fetchJson(buildMarineUrl(latitude, longitude, minimal), 'Open-Meteo Marine API');
+    return parseMarine(data);
   };
 
-  // Parse hourly forecast
-  if (data.hourly?.time) {
-    data.hourly = {
-      time: data.hourly.time,
-      temperature: data.hourly.temperature_2m,
-      feelsLike: data.hourly.apparent_temperature,
-      precipitation: data.hourly.precipitation,
-      windSpeed: data.hourly.wind_speed_10m,
-      windDirection: data.hourly.wind_direction_10m,
-      pressure: data.hourly.pressure_msl,
-      cloudCover: data.hourly.cloud_cover,
-      weatherCode: data.hourly.weather_code,
-      relativeHumidity: data.hourly.relative_humidity_2m,
+  try {
+    const series = await attempt(false);
+    if (series) return { series, error: null };
+  } catch (error) {
+    if (error instanceof OfflineError) {
+      return { series: null, error: 'Brak połączenia — dane morskie niedostępne.' };
+    }
+  }
+
+  try {
+    const series = await attempt(true);
+    return {
+      series,
+      error: series ? null : 'Marine API nie zwróciło danych o fali dla tego punktu.',
+    };
+  } catch (error) {
+    return {
+      series: null,
+      error:
+        error instanceof OfflineError
+          ? 'Brak połączenia — dane morskie niedostępne.'
+          : `Nie udało się pobrać danych morskich (${error instanceof Error ? error.message : String(error)}).`,
     };
   }
-
-  parseDailyBlock(data);
-
-  return data;
 }
 
 /**
- * Pobierz dane z ostatnich 3 pełnych dni (bez dzisiejszego dnia i prognozy).
- * Używa Forecast API z past_days=3, forecast_days=0.
- * Zwraca tylko obiekt { daily: ... } — bez current/hourly.
+ * Pobiera komplet danych dla łowiska: pogodę (3 dni wstecz + 7 dni prognozy)
+ * oraz — wyłącznie dla akwenów morskich — dane z Marine API.
+ *
+ * Brak danych morskich nigdy nie jest zmyślany: zwracamy `marine: null`
+ * i komunikat w `marineError`, a interfejs pokazuje to wprost.
  */
-export async function fetchTrendData(
+export async function fetchWeatherBundle(
   latitude: number,
-  longitude: number
-): Promise<OpenMeteoResponse> {
-  const url = `${BASE_URL}/forecast?`
-    + `daily=temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max,wind_direction_10m_dominant,weather_code`
-    + `&hourly=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,weather_code`
-    + `&past_days=3`
-    + `&forecast_days=0`
-    + `&timezone=Europe%2FWarsaw`
-    + `&latitude=${latitude}&longitude=${longitude}`;
+  longitude: number,
+  includeMarine: boolean
+): Promise<WeatherBundle> {
+  const forecastPromise = fetchJson(buildForecastUrl(latitude, longitude), 'Open-Meteo Forecast API');
 
-  const data = await fetchJsonWithRetry(url, 'Open-Meteo Trend API');
-  parseDailyBlock(data);
-  return data;
-}
+  const marinePromise: Promise<{ series: MarineSeries | null; error: string | null }> = includeMarine
+    ? fetchMarine(latitude, longitude)
+    : Promise.resolve({ series: null, error: null });
 
-/**
- * Pobierz dane morskie (fale, temperatura wody).
- */
-export async function fetchMarineData(
-  latitude: number,
-  longitude: number
-): Promise<MarineResponse> {
-  const url = `${MARINE_URL}/marine?`
-    + `current=wave_height,wave_direction,sea_surface_temperature`
-    + `&hourly=wave_height,wave_direction,sea_surface_temperature`
-    + `&timezone=Europe%2FWarsaw`
-    + `&latitude=${latitude}&longitude=${longitude}`;
+  const [forecast, marine] = await Promise.all([forecastPromise, marinePromise]);
 
-  const data = await fetchJsonWithRetry(url, 'Open-Meteo Marine API');
+  const hours = parseHours(forecast.hourly as Record<string, unknown> | undefined);
+  const days = parseDays(forecast.daily as Record<string, unknown> | undefined);
+  const current = parseCurrent(forecast.current as Record<string, unknown> | undefined, hours[0]);
 
-  // API zwraca pola w snake_case, a reszta aplikacji działa na camelCase.
+  if (!current || hours.length === 0 || days.length === 0) {
+    throw new Error('Odpowiedź Open-Meteo nie zawiera kompletu danych pogodowych.');
+  }
+
   return {
-    timezone: data.timezone,
-    current: data.current ? {
-      waveHeight: data.current.wave_height,
-      waveDirection: data.current.wave_direction,
-      waterTemperature: data.current.sea_surface_temperature,
-    } : undefined,
-    hourly: data.hourly ? {
-      time: data.hourly.time,
-      waveHeight: data.hourly.wave_height,
-      waveDirection: data.hourly.wave_direction,
-      waterTemperature: data.hourly.sea_surface_temperature,
-    } : undefined,
+    fetchedAt: Date.now(),
+    timezone: typeof forecast.timezone === 'string' ? forecast.timezone : 'Europe/Warsaw',
+    current,
+    hours,
+    days,
+    marine: marine.series,
+    marineRequested: includeMarine,
+    marineError: marine.error,
   };
 }

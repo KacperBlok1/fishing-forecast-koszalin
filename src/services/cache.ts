@@ -1,73 +1,76 @@
+import type { WeatherBundle } from '../types';
+
 /**
- * Prosta cache'owanie wyników w localStorage.
- * Klucze są generowane z współrzędnych i typu łowiska.
+ * Cache odpowiedzi Open-Meteo w localStorage.
+ *
+ * Dwa progi:
+ *  - FRESH_TTL — dane uznajemy za świeże i nie odpytujemy API ponownie;
+ *  - STALE_TTL — dane są przeterminowane, ale wciąż pokazujemy je jako
+ *    "ostatnia poprawna odpowiedź", gdy API lub internet nie działają.
  */
 
-const CACHE_KEY_NAMESPACE = 'fishing_cache_';
-const CACHE_KEY_PREFIX = `${CACHE_KEY_NAMESPACE}v2_`;
-const CACHE_TTL = 5 * 60 * 1000; // 5 minut
+const CACHE_NAMESPACE = 'fishing_cache_';
+const CACHE_PREFIX = `${CACHE_NAMESPACE}v3_`;
 
-interface CacheEntry<T> {
-  data: T;
-  timestamp: number;
+export const FRESH_TTL = 15 * 60 * 1000; // 15 minut
+export const STALE_TTL = 24 * 60 * 60 * 1000; // 24 godziny
+
+interface CacheEntry {
+  data: WeatherBundle;
+  savedAt: number;
 }
 
-function getCacheKey(latitude: number, longitude: number, type: string): string {
-  return `${CACHE_KEY_PREFIX}${latitude.toFixed(2)}_${longitude.toFixed(2)}_${type}`;
+export interface CachedBundle {
+  bundle: WeatherBundle;
+  savedAt: number;
+  fresh: boolean;
 }
 
-export function getCachedResult<T>(
-  latitude: number,
-  longitude: number,
-  type: string
-): T | null {
+function cacheKey(latitude: number, longitude: number, type: string): string {
+  return `${CACHE_PREFIX}${latitude.toFixed(3)}_${longitude.toFixed(3)}_${type}`;
+}
+
+export function readCachedBundle(latitude: number, longitude: number, type: string): CachedBundle | null {
   try {
-    const key = getCacheKey(latitude, longitude, type);
-    const raw = localStorage.getItem(key);
-
+    const raw = localStorage.getItem(cacheKey(latitude, longitude, type));
     if (!raw) return null;
-
-    const entry: CacheEntry<T> = JSON.parse(raw);
-
-    // Sprawdź czy cache nie wygasł
-    if (Date.now() - entry.timestamp > CACHE_TTL) {
-      localStorage.removeItem(key);
+    const entry = JSON.parse(raw) as CacheEntry;
+    if (!entry?.data?.current || !Array.isArray(entry.data.hours)) return null;
+    const age = Date.now() - entry.savedAt;
+    if (age > STALE_TTL) {
+      localStorage.removeItem(cacheKey(latitude, longitude, type));
       return null;
     }
-
-    return entry.data;
+    return { bundle: entry.data, savedAt: entry.savedAt, fresh: age <= FRESH_TTL };
   } catch {
     return null;
   }
 }
 
-export function setCachedResult<T>(
+export function writeCachedBundle(
   latitude: number,
   longitude: number,
   type: string,
-  data: T
+  bundle: WeatherBundle
 ): void {
   try {
-    const key = getCacheKey(latitude, longitude, type);
-    const entry: CacheEntry<T> = {
-      data,
-      timestamp: Date.now(),
-    };
-    localStorage.setItem(key, JSON.stringify(entry));
+    const entry: CacheEntry = { data: bundle, savedAt: Date.now() };
+    localStorage.setItem(cacheKey(latitude, longitude, type), JSON.stringify(entry));
   } catch {
-    // Ignoruj błędy localStorage
+    // Brak miejsca albo zablokowany localStorage — cache jest opcjonalny.
   }
 }
 
-export function clearAllCaches(): void {
-  const keysToRemove: string[] = [];
-
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i);
-    if (key && key.startsWith(CACHE_KEY_NAMESPACE)) {
-      keysToRemove.push(key);
+/** Czyści cache pogodowy (nie rusza zapisanych łowisk ani ustawień). */
+export function clearWeatherCache(): void {
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(CACHE_NAMESPACE)) keys.push(key);
     }
+    keys.forEach((key) => localStorage.removeItem(key));
+  } catch {
+    // ignorujemy
   }
-
-  keysToRemove.forEach((key) => localStorage.removeItem(key));
 }

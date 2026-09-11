@@ -1,66 +1,104 @@
-export function formatTime(iso: string): string {
-  if (!iso || iso === '--') return '--';
-  // Normalize ISO format without seconds to include seconds
-  let normalized = iso;
-  if (normalized.match(/T\d{2}:\d{2}(?!\d)/)) {
-    // "2024-08-20T14:00" → "2024-08-20T14:00:00"
-    normalized = normalized.replace(/(\d{2}:\d{2})(?!\d)/, '$1:00');
+import type { RatingLabel } from '../types';
+
+const WIND_DIRECTIONS = ['płn.', 'płn.-wsch.', 'wsch.', 'poł.-wsch.', 'poł.', 'poł.-zach.', 'zach.', 'płn.-zach.'];
+
+/** Kierunek wiatru w stopniach → skrót po polsku (kierunek, z którego wieje). */
+export function windDirectionName(degrees: number): string {
+  if (!Number.isFinite(degrees)) return '—';
+  const index = Math.round(((degrees % 360) + 360) % 360 / 45) % 8;
+  return WIND_DIRECTIONS[index];
+}
+
+const WEATHER_CODES: Record<number, string> = {
+  0: 'Bezchmurnie',
+  1: 'Głównie bezchmurnie',
+  2: 'Częściowe zachmurzenie',
+  3: 'Pochmurno',
+  45: 'Mgła',
+  48: 'Mgła osadzająca szadź',
+  51: 'Lekka mżawka',
+  53: 'Mżawka',
+  55: 'Gęsta mżawka',
+  56: 'Marznąca mżawka',
+  57: 'Gęsta marznąca mżawka',
+  61: 'Słaby deszcz',
+  63: 'Deszcz',
+  65: 'Ulewny deszcz',
+  66: 'Marznący deszcz',
+  67: 'Silny marznący deszcz',
+  71: 'Słaby śnieg',
+  73: 'Śnieg',
+  75: 'Intensywny śnieg',
+  77: 'Śnieg ziarnisty',
+  80: 'Przelotny deszcz',
+  81: 'Silne przelotne opady',
+  82: 'Nawalne przelotne opady',
+  85: 'Przelotny śnieg',
+  86: 'Silny przelotny śnieg',
+  95: 'Burza',
+  96: 'Burza z gradem',
+  99: 'Silna burza z gradem',
+};
+
+export function weatherCodeDescription(code: number): string {
+  return WEATHER_CODES[code] ?? 'Warunki mieszane';
+}
+
+const WEATHER_ICONS: Record<number, string> = {
+  0: '☀️', 1: '🌤️', 2: '⛅', 3: '☁️', 45: '🌫️', 48: '🌫️',
+  51: '🌦️', 53: '🌦️', 55: '🌧️', 56: '🌧️', 57: '🌧️',
+  61: '🌧️', 63: '🌧️', 65: '🌧️', 66: '🌧️', 67: '🌧️',
+  71: '🌨️', 73: '🌨️', 75: '🌨️', 77: '🌨️',
+  80: '🌦️', 81: '🌧️', 82: '⛈️', 85: '🌨️', 86: '🌨️',
+  95: '⛈️', 96: '⛈️', 99: '⛈️',
+};
+
+export function weatherCodeIcon(code: number): string {
+  return WEATHER_ICONS[code] ?? '🌡️';
+}
+
+/** Kolor przypisany etykiecie oceny — używany w wykresach i odznakach. */
+export function ratingColor(label: RatingLabel): string {
+  switch (label) {
+    case 'bardzo dobrze':
+      return 'var(--rate-great)';
+    case 'dobrze':
+      return 'var(--rate-good)';
+    case 'średnio':
+      return 'var(--rate-mid)';
+    case 'słabo':
+    default:
+      return 'var(--rate-poor)';
   }
-  // Handle time-only formats like "05:23" (sunrise/sunset)
-  if (!normalized.includes('T') && !normalized.includes('-')) {
-    normalized = '2000-01-01T' + normalized;
-  }
-  const d = new Date(normalized);
-  if (isNaN(d.getTime())) return '--';
-  return d.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' });
 }
 
-export function formatDate(iso: string): string {
-  if (!iso || iso === '--') return '--';
-  // Ensure date-only strings get a time component to avoid UTC midnight shift
-  let normalized = iso;
-  if (!normalized.includes('T')) {
-    normalized = normalized + 'T00:00:00';
-  }
-  const d = new Date(normalized);
-  if (isNaN(d.getTime())) return '--';
-  return d.toLocaleDateString('pl-PL', { day: '2-digit', month: '2-digit', weekday: 'short' });
+export function formatTemperature(value: number): string {
+  if (!Number.isFinite(value)) return '—';
+  return `${Math.round(value)} °C`;
 }
 
-export function formatTemp(t: number): string {
-  return (t > 0 ? '+' : '') + Math.round(t) + '°C';
+export function formatWind(value: number): string {
+  if (!Number.isFinite(value)) return '—';
+  return `${Math.round(value)} km/h`;
 }
 
-export function formatWind(speed: number): string {
-  return Math.round(speed) + ' km/h';
+export function formatPrecipitation(value: number): string {
+  if (!Number.isFinite(value)) return '—';
+  return `${value.toFixed(1)} mm`;
 }
 
-export function formatPrecip(p: number): string {
-  return p.toFixed(1) + ' mm/h';
+export function formatPressure(value: number): string {
+  if (!Number.isFinite(value)) return '—';
+  return `${Math.round(value)} hPa`;
 }
 
-export function formatPressure(p: number): string {
-  return Math.round(p) + ' hPa';
+export function formatWave(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return 'brak danych';
+  return `${value.toFixed(1)} m`;
 }
 
-export function formatWave(h: number): string {
-  return h.toFixed(1) + ' m';
-}
-
-export function getWeatherCodeIcon(code: number): string {
-  const m: Record<number, string> = {
-    0: '☀️', 1: '🌤️', 2: '⛅', 3: '☁️', 45: '🌫️', 48: '🌫️',
-    51: '🌦️', 53: '🌦️', 55: '🌧️', 56: '🌧️', 57: '🌧️',
-    61: '🌧️', 63: '🌧️', 65: '🌧️', 66: '🌧️', 67: '🌧️',
-    71: '🌨️', 73: '🌨️', 75: '🌨️', 77: '🌨️',
-    80: '🌦️', 81: '🌧️', 82: '⛈️', 85: '🌨️', 86: '🌨️',
-    95: '⛈️', 96: '⛈️', 99: '⛈️',
-  };
-  return m[code] || '🌡️';
-}
-
-export function getVerdictColor(score: number): string {
-  if (score >= 75) return '#2ecc71';
-  if (score >= 45) return '#f39c12';
-  return '#e74c3c';
+export function formatSigned(value: number, unit: string): string {
+  if (!Number.isFinite(value)) return '—';
+  const rounded = Math.round(value * 10) / 10;
+  return `${rounded > 0 ? '+' : ''}${rounded} ${unit}`;
 }

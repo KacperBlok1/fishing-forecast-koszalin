@@ -1,236 +1,689 @@
 import type {
-  FishingLocationType, FishingVerdict, ForecastResult, ScoreComponent, WeatherFactor,
-  BestWindow, TrendData, CurrentWeather, ForecastHourly,
-  HistoricalDaily, MarineData,
+  DayPhase,
+  FactorImpact,
+  FishingLocationType,
+  FishingScore,
+  HourPoint,
+  MoonInfo,
+  RatingLabel,
+  ScoreFactor,
+  SpeciesAdjustment,
+  SpeciesId,
 } from '../types';
+import { getSpecies } from '../data/species';
+import type { SpeciesProfile } from '../data/species';
+import { windDirectionName, weatherCodeDescription } from './formatting';
 
-const MAX_SCORE = 100;
-const WIND_WEIGHT = 0.25, PRESSURE_WEIGHT = 0.15, RAIN_WEIGHT = 0.15;
-const TEMP_WEIGHT = 0.10, CLOUD_WEIGHT = 0.10, TIME_WEIGHT = 0.10;
-const MARINE_WEIGHT = 0.15;
-const WIND_THRESHOLDS: Record<FishingLocationType, { c: number; g: number; m: number; s: number; sv: number }> = {
-  jezioro: { c: 5, g: 12, m: 20, s: 30, sv: 50 },
-  rzeka: { c: 8, g: 15, m: 25, s: 35, sv: 55 },
-  morze: { c: 10, g: 18, m: 28, s: 40, sv: 60 },
+// ============================================================
+// Stałe algorytmu — jawne, żeby dało się je opisać w zakładce "Dlaczego?"
+// ============================================================
+
+/** Wagi czynników bazowych. Sumują się do 100. */
+export const WEIGHTS = {
+  wind: 18,
+  pressure: 18,
+  temperature: 16,
+  light: 16,
+  precipitation: 12,
+  cloud: 10,
+  moon: 6,
+  stability: 4,
+} as const;
+
+/** Waga komponentu morskiego — doliczana tylko dla łowisk typu "morze" z danymi Marine API. */
+export const MARINE_WEIGHT = 15;
+
+/** Maksymalna korekta gatunkowa (w punktach, w obie strony). */
+export const SPECIES_DELTA_LIMIT = 12;
+
+/** Progi etykiet 0-100. */
+export const RATING_THRESHOLDS = {
+  srednio: 35,
+  dobrze: 55,
+  bardzoDobrze: 75,
+} as const;
+
+/** Minimalny wynik godzinowy, żeby godzina weszła do "okna połowowego". */
+export const WINDOW_MIN_SCORE = 55;
+
+/** Progi wiatru (km/h) zależne od akwenu. */
+export const WIND_THRESHOLDS: Record<
+  FishingLocationType,
+  { calm: number; optimalFrom: number; optimalTo: number; strong: number; severe: number }
+> = {
+  jezioro: { calm: 3, optimalFrom: 6, optimalTo: 14, strong: 30, severe: 50 },
+  rzeka: { calm: 3, optimalFrom: 6, optimalTo: 18, strong: 35, severe: 55 },
+  morze: { calm: 4, optimalFrom: 8, optimalTo: 20, strong: 40, severe: 60 },
 };
-const WAVE_THRESHOLDS = { s: 0.5, m: 1.0, l: 2.0, d: 3.0 };
-const RAIN_THRESHOLDS = { l: 0.5, m: 2.0, h: 5.0, t: 10.0 };
-function clamp(v: number, a: number, b: number) { return Math.max(a, Math.min(b, v)); }
-function lerp(a: number, b: number, t: number) { return a + (b - a) * t; }
-function r1(n: number) { return Math.round(n * 10) / 10; }
-function calcWindScore(w: number, g: number, lt: FishingLocationType): number {
-  const t = WIND_THRESHOLDS[lt]; let s: number;
-  if (w <= t.c) s = 45;
-  else if (w <= t.g) s = lerp(85, 95, (w - t.c) / (t.g - t.c));
-  else if (w <= t.m) s = lerp(80, 60, (w - t.g) / (t.m - t.g));
-  else if (w <= t.s) s = lerp(55, 30, (w - t.m) / (t.s - t.m));
-  else s = lerp(25, 5, (w - t.s) / (t.sv - t.s));
-  if (g > 0) { const r = g / w; if (r > 2.5) s -= 15; else if (r > 1.8) s -= 8; else if (r > 1.4) s -= 3; }
-  return r1(clamp(s, 0, MAX_SCORE));
-}
-function calcPressureScore(p: number, hd: HistoricalDaily | null): number {
-  let s: number; const d = Math.abs(p - 1013);
-  if (d < 5) s = 90; else if (d < 15) s = 75; else if (d < 30) s = 60; else if (d < 50) s = 45; else s = 30;
-  if (hd && hd.time.length >= 2) { const c = Math.abs(p - hd.pressureMean[hd.pressureMean.length - 1]); if (c < 3) s = Math.min(s, 90); else if (c < 8) s = Math.min(s, 75); else if (c < 15) s -= 10; else s -= 20; }
-  return r1(clamp(s, 0, MAX_SCORE));
-}
-function calcRainScore(cp: number, hd: HistoricalDaily | null): number {
-  let s: number;
-  if (cp === 0) s = 90; else if (cp <= RAIN_THRESHOLDS.l) s = 75; else if (cp <= RAIN_THRESHOLDS.m) s = 55;
-  else if (cp <= RAIN_THRESHOLDS.h) s = 35; else s = 15;
-  if (hd && hd.precipitationSum) { const tr = hd.precipitationSum.slice(-3).reduce((a: number, b: number) => a + b, 0); if (tr > 30) s -= 15; else if (tr > 15) s -= 8; else if (tr > 5) s -= 3; }
-  return r1(clamp(s, 0, MAX_SCORE));
-}
-function calcTempScore(temp: number, fl: number, hd: HistoricalDaily | null): number {
-  let s: number;
-  if (temp >= 10 && temp <= 20) s = 90; else if (temp >= 5 && temp <= 25) s = 75;
-  else if (temp >= 0 && temp <= 30) s = 60; else if (temp >= -5 && temp <= 35) s = 40; else s = 25;
-  const f = Math.abs(temp - fl); if (f > 10) s -= 10; else if (f > 5) s -= 5;
-  if (hd && hd.temperatureMean.length >= 3) { const tr = hd.temperatureMean.slice(-3); const t = tr[tr.length - 1] - tr[0]; if (Math.abs(t) > 10) s -= 10; else if (Math.abs(t) > 5) s -= 5; }
-  return r1(clamp(s, 0, MAX_SCORE));
-}
-function calcCloudScore(cc: number): number {
-  if (cc >= 30 && cc <= 70) return 90; if (cc >= 15 && cc <= 85) return 75;
-  if (cc >= 0 && cc <= 100) return r1(clamp(90 - Math.abs(cc - 50) * 0.5, 50, 85));
-  return 60;
-}
-function calcTimeScore(isDay: number, h: number): number {
-  if ((h >= 5 && h <= 7) || (h >= 18 && h <= 21)) return 95;
-  if (h >= 7 && h <= 9) return 85; if (h >= 16 && h <= 18) return 80;
-  if (isDay === 1) return 65; return 35;
-}
-function calcMarineScore(wh: number, _wd: number, wt: number, _ws: number): number {
-  let s: number;
-  if (wh <= WAVE_THRESHOLDS.s) s = 90; else if (wh <= WAVE_THRESHOLDS.m) s = 70;
-  else if (wh <= WAVE_THRESHOLDS.l) s = 45; else if (wh <= WAVE_THRESHOLDS.d) s = 25; else s = 10;
-  if (wt >= 15 && wt <= 22) s = Math.min(s, 90); else if (wt >= 10 && wt <= 25) s = Math.min(s, 80); else s = Math.min(s, 60);
-  return r1(clamp(s, 0, MAX_SCORE));
-}
-function getWD(d: number): string { const p = ['płn.', 'płn.-wsch.', 'wsch.', 'poł.-wsch.', 'poł.', 'poł.-zach.', 'zach.', 'płn.-zach.']; return p[Math.round(d / 45) % 8]; }
-function getWCD(c: number): string { const m: Record<number, string> = { 0: 'Bez chmur', 1: 'Głównie bezchmurnie', 2: 'Częściowe zachmurzenie', 3: 'Pochmurno', 45: 'Mgła', 51: 'Lekka mżawka', 53: 'Mżawka', 55: 'Mżawka intensywna', 61: 'Lekki deszcz', 63: 'Deszcz', 65: 'Deszcz nawalny', 71: 'Lekki śnieg', 73: 'Śnieg', 80: 'Opady przelotne', 95: 'Burza' }; return m[c] || 'Nieznany'; }
-function getWindDesc(sp: number, lt: FishingLocationType): string { const t = WIND_THRESHOLDS[lt]; if (sp <= t.c) return 'Zerowy wiatr.'; if (sp <= t.g) return 'Lekki wiatr - pomaga.'; if (sp <= t.m) return 'Umiarkowany wiatr.'; if (sp <= t.s) return 'Silny wiatr.'; return 'Bardzo silny wiatr!'; }
-function getPresDesc(p: number): string { if (p > 1018) return 'Wysokie ciśnienie.'; if (p > 1005) return 'Ciśnienie w normie.'; if (p > 990) return 'Obniżone ciśnienie.'; return 'Bardzo niskie ciśnienie!'; }
-function getRainDesc(p: number): string { if (p === 0) return 'Brak opadów.'; if (p <= RAIN_THRESHOLDS.l) return 'Lekka mżawka.'; if (p <= RAIN_THRESHOLDS.m) return 'Umiarkowane opady.'; if (p <= RAIN_THRESHOLDS.h) return 'Silne opady.'; return 'Ulewa!'; }
-function getTempDesc(t: number): string { if (t >= 15 && t <= 22) return 'Idealna temperatura.'; if (t >= 10 && t <= 25) return 'Dobra temperatura.'; if (t >= 5 && t <= 30) return 'Umiarkowana temperatura.'; return 'Ekstremalna temperatura.'; }
-function getCloudDesc(c: number): string { if (c >= 30 && c <= 70) return 'Częściowe zachmurzenie.'; if (c >= 15 && c <= 85) return 'Umiarkowane zachmurzenie.'; if (c === 0) return 'Czyste niebo.'; return 'Całkowite zachmurzenie.'; }
-function getWaveDesc(h: number): string { if (h <= WAVE_THRESHOLDS.s) return 'Małe fale.'; if (h <= WAVE_THRESHOLDS.m) return 'Umiarkowane fale.'; if (h <= WAVE_THRESHOLDS.l) return 'Duże fale.'; return 'Bardzo duże fale!'; }
 
-/** Dodaje godzinę do ISO-time stringa (np. "2024-08-20T14:00" → "2024-08-20T15:00"). */
-function addOneHour(iso: string): string {
-  const [datePart, timePart] = iso.split('T');
-  const [h, m] = timePart.split(':');
-  const totalMin = parseInt(h, 10) * 60 + parseInt(m, 10) + 60;
-  const nh = String(Math.floor(totalMin / 60) % 24).padStart(2, '0');
-  const nm = String(totalMin % 60).padStart(2, '0');
-  return `${datePart}T${nh}:${nm}`;
+/** Progi wysokości fali (m) dla trybu morskiego. */
+export const WAVE_THRESHOLDS = { calm: 0.3, low: 0.6, moderate: 1.0, high: 1.5, severe: 2.5 } as const;
+
+// ============================================================
+// Pomocnicze
+// ============================================================
+
+export function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * clamp(t, 0, 1);
+}
+
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function isNum(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+/** Etykieta słowna dla wyniku 0-100. */
+export function ratingLabel(score: number): RatingLabel {
+  if (score >= RATING_THRESHOLDS.bardzoDobrze) return 'bardzo dobrze';
+  if (score >= RATING_THRESHOLDS.dobrze) return 'dobrze';
+  if (score >= RATING_THRESHOLDS.srednio) return 'średnio';
+  return 'słabo';
+}
+
+function impactFor(score: number): FactorImpact {
+  if (score >= 70) return 'positive';
+  if (score >= 50) return 'neutral';
+  return 'negative';
+}
+
+// ============================================================
+// Oceny cząstkowe (każda zwraca 0-100)
+// ============================================================
+
+/**
+ * Wiatr. Zupełny bezruch jest gorszy od lekkiej fali (mniejsze natlenienie,
+ * ryba ostrożniejsza), bardzo silny wiatr obniża wynik i utrudnia łowienie.
+ * Dodatkowo karzemy porywistość (stosunek porywów do średniej prędkości).
+ */
+export function scoreWind(speed: number, gusts: number, type: FishingLocationType): number {
+  const t = WIND_THRESHOLDS[type];
+  const w = Math.max(0, speed);
+  let score: number;
+
+  if (w <= t.calm) {
+    score = 46;
+  } else if (w < t.optimalFrom) {
+    score = lerp(55, 92, (w - t.calm) / (t.optimalFrom - t.calm));
+  } else if (w <= t.optimalTo) {
+    score = 92;
+  } else if (w <= t.strong) {
+    score = lerp(88, 26, (w - t.optimalTo) / (t.strong - t.optimalTo));
+  } else if (w <= t.severe) {
+    score = lerp(24, 4, (w - t.strong) / (t.severe - t.strong));
+  } else {
+    score = 2;
+  }
+
+  if (isNum(gusts) && w > 1) {
+    const ratio = gusts / w;
+    if (ratio > 2.2) score -= 12;
+    else if (ratio > 1.7) score -= 6;
+  }
+
+  return round1(clamp(score, 0, 100));
 }
 
 /**
- * Wyciąga godzinę i minutę bezpośrednio z tekstu ISO zwróconego przez Open-Meteo
- * (już w strefie czasowej wybranej lokalizacji, np. Europe/Warsaw), zamiast
- * odczytywać czas z zegara przeglądarki użytkownika. Dzięki temu ocena "pory dnia"
- * jest poprawna również wtedy, gdy urządzenie użytkownika ma ustawioną inną strefę
- * czasową niż lokalizacja łowiska (np. w trakcie podróży).
+ * Ciśnienie: 60 % oceny to sam poziom, 40 % to zmiana z ostatnich 24 h.
+ * Łagodny spadek ciśnienia (nadchodzący front) bywa korzystny, gwałtowna
+ * zmiana w dowolną stronę zwykle wyłącza żerowanie.
  */
-function getIsoHourMinute(iso: string): { hour: number; minute: number } {
-  const timePart = iso?.split('T')[1];
-  if (!timePart) { const d = new Date(); return { hour: d.getHours(), minute: d.getMinutes() }; }
-  const [hh, mm] = timePart.split(':');
-  const hour = parseInt(hh, 10);
-  const minute = parseInt(mm ?? '0', 10);
-  return { hour: Number.isFinite(hour) ? hour : 0, minute: Number.isFinite(minute) ? minute : 0 };
+export function scorePressure(pressure: number, change24h: number | null): number {
+  let level: number;
+  if (pressure >= 1008 && pressure <= 1024) level = 90;
+  else if (pressure >= 1000 && pressure <= 1030) level = 68;
+  else if (pressure >= 990 && pressure <= 1036) level = 44;
+  else level = 20;
+
+  if (change24h === null || !isNum(change24h)) {
+    return round1(clamp(level, 0, 100));
+  }
+
+  const d = change24h;
+  let change: number;
+  if (Math.abs(d) <= 1) change = 92;
+  else if (d < 0 && d >= -4) change = 82;
+  else if (d > 0 && d <= 4) change = 70;
+  else if (Math.abs(d) <= 8) change = 40;
+  else change = 12;
+
+  return round1(clamp(level * 0.6 + change * 0.4, 0, 100));
 }
 
-function findBestWindows(h: ForecastHourly, currentTime: string, _m: MarineData | null, lt: FishingLocationType): BestWindow[] {
-  const wins: BestWindow[] = [];
-  const fd = h.time.map((t, i) => ({ time: t, temp: h.temperature[i], precip: h.precipitation[i], wind: h.windSpeed[i], cc: h.cloudCover[i], wc: h.weatherCode[i] }));
-  // Czas z Open-Meteo jest już w strefie Europe/Warsaw; porównujemy jego
-  // tekstową reprezentację ISO, zamiast mieszać ją ze strefą przeglądarki.
-  const fh = fd.filter(x => x.time >= currentTime);
-  for (let i = 0; i <= fh.length - 3; i++) {
-    const w = fh.slice(i, i + 3);
-    const at = w.reduce((a, b) => a + b.temp, 0) / w.length;
-    const ap = w.reduce((a, b) => a + b.precip, 0) / w.length;
-    const aw = w.reduce((a, b) => a + b.wind, 0) / w.length;
-    const mp = Math.max(...w.map(x => x.precip));
-    let ws = 0;
-    ws += calcTempScore(at, at, null); ws += calcWindScore(aw, aw * 1.3, lt); ws += calcRainScore(ap, null); ws += calcCloudScore(w[1]?.cc ?? 50); ws += calcTimeScore(1, getIsoHourMinute(w[1].time).hour); ws = r1(ws / 5);
-    if (ws > 50 && mp < RAIN_THRESHOLDS.h) {
-      wins.push({ start: w[0].time, end: addOneHour(w[2].time), score: Math.round(ws), temperature: r1(at), windSpeed: r1(aw), precipitation: r1(ap), weatherCode: w[1].wc });
+/**
+ * Opady. Delikatna mżawka bywa lepsza od zupełnie suchej pogody,
+ * ulewa i burza wynik mocno obniżają.
+ */
+export function scorePrecipitation(precipitation: number, weatherCode: number): number {
+  const p = Math.max(0, precipitation);
+  let score: number;
+  if (p === 0) score = 80;
+  else if (p <= 0.3) score = 88;
+  else if (p <= 1) score = 70;
+  else if (p <= 3) score = 46;
+  else if (p <= 6) score = 22;
+  else score = 6;
+
+  // Kody 95-99 to burze — niezależnie od sumy opadów jest to warunek odradzający wyjście.
+  if (weatherCode >= 95) score = Math.min(score, 12);
+
+  return round1(clamp(score, 0, 100));
+}
+
+/**
+ * Temperatura: 60 % to sam poziom, 40 % to zmiana względem średniej
+ * z trzech poprzednich dni. Stabilna temperatura jest lepsza niż skok.
+ */
+export function scoreTemperature(temperature: number, changeVs3Days: number | null): number {
+  let level: number;
+  if (temperature >= 12 && temperature <= 22) level = 92;
+  else if (temperature >= 8 && temperature <= 26) level = 74;
+  else if (temperature >= 3 && temperature <= 30) level = 52;
+  else if (temperature >= -2 && temperature <= 34) level = 26;
+  else level = 8;
+
+  if (changeVs3Days === null || !isNum(changeVs3Days)) {
+    return round1(clamp(level, 0, 100));
+  }
+
+  const d = changeVs3Days;
+  let change: number;
+  if (Math.abs(d) <= 1.5) change = 90;
+  else if (d > 1.5 && d <= 4) change = 76;
+  else if (d < -1.5 && d >= -4) change = 58;
+  else if (Math.abs(d) <= 8) change = 36;
+  else change = 12;
+
+  return round1(clamp(level * 0.6 + change * 0.4, 0, 100));
+}
+
+/** Zachmurzenie: rozproszone światło sprzyja drapieżnikom, pełne słońce i całkowity zwał mniej. */
+export function scoreCloud(cloudCover: number): number {
+  const c = clamp(cloudCover, 0, 100);
+  if (c >= 30 && c <= 75) return 90;
+  if (c >= 15 && c < 30) return 70;
+  if (c > 75 && c <= 90) return 66;
+  if (c < 15) return 38;
+  return 46;
+}
+
+/** Pora dnia względem wschodu i zachodu słońca. */
+export function dayPhase(minutes: number, sunriseMinutes: number, sunsetMinutes: number): DayPhase {
+  const toSunrise = minutes - sunriseMinutes;
+  const toSunset = minutes - sunsetMinutes;
+  if (Math.abs(toSunrise) <= 60) return 'świt';
+  if (Math.abs(toSunset) <= 60) return 'zmierzch';
+  if (minutes < sunriseMinutes - 60 || minutes > sunsetMinutes + 60) return 'noc';
+  if (toSunrise > 60 && toSunrise <= 240) return 'poranek';
+  if (toSunset < -60 && toSunset >= -240) return 'popołudnie';
+  return 'dzień';
+}
+
+/** Ocena pory dnia. Świt i zmierzch to klasyczne szczyty aktywności ryb. */
+export function scoreLight(minutes: number, sunriseMinutes: number, sunsetMinutes: number): number {
+  switch (dayPhase(minutes, sunriseMinutes, sunsetMinutes)) {
+    case 'świt':
+    case 'zmierzch':
+      return 95;
+    case 'poranek':
+    case 'popołudnie':
+      return 66;
+    case 'dzień':
+      return 40;
+    case 'noc':
+    default:
+      return 24;
+  }
+}
+
+/**
+ * Księżyc. Przyjmujemy prosty model: nów i pełnia to okresy wzmożonej
+ * aktywności, kwadry są neutralne. Waga tego czynnika jest celowo mała (6/100).
+ */
+export function scoreMoon(illumination: number): number {
+  const i = clamp(illumination, 0, 1);
+  if (i <= 0.08 || i >= 0.92) return 88;
+  if (i <= 0.2 || i >= 0.8) return 72;
+  if (i >= 0.4 && i <= 0.6) return 38;
+  return 55;
+}
+
+/**
+ * Stabilność pogody liczona z rozrzutu ciśnienia i wiatru w oknie ±12 h.
+ * Ryby źle znoszą gwałtowne zmiany — nawet dobre wartości chwilowe
+ * przy rozchwianej pogodzie są mniej warte.
+ */
+export function scoreStability(pressureRange: number, windRange: number): number {
+  if (pressureRange <= 3 && windRange <= 12) return 92;
+  if (pressureRange <= 6 && windRange <= 20) return 68;
+  if (pressureRange <= 10 && windRange <= 30) return 40;
+  return 14;
+}
+
+/** Ocena warunków morskich na podstawie wysokości fali. */
+export function scoreWave(waveHeight: number): number {
+  const h = Math.max(0, waveHeight);
+  if (h <= WAVE_THRESHOLDS.calm) return 92;
+  if (h <= WAVE_THRESHOLDS.low) return 80;
+  if (h <= WAVE_THRESHOLDS.moderate) return 58;
+  if (h <= WAVE_THRESHOLDS.high) return 34;
+  if (h <= WAVE_THRESHOLDS.severe) return 14;
+  return 3;
+}
+
+/** Etykieta bezpieczeństwa dla trybu morskiego. */
+export function waveSafety(
+  waveHeight: number | null
+): { level: 'bezpiecznie' | 'ostrożnie' | 'trudne warunki' | 'niebezpiecznie' | 'brak danych'; note: string } {
+  if (waveHeight === null || !isNum(waveHeight)) {
+    return {
+      level: 'brak danych',
+      note: 'Marine API nie zwróciło wysokości fali dla tego punktu. Oceń warunki na miejscu.',
+    };
+  }
+  if (waveHeight <= 0.5) {
+    return { level: 'bezpiecznie', note: 'Spokojna woda. Standardowa ostrożność na brzegu i pomoście.' };
+  }
+  if (waveHeight <= 1.0) {
+    return { level: 'ostrożnie', note: 'Wyraźna fala. Uważaj na śliskie ostrogi i falochrony.' };
+  }
+  if (waveHeight <= 2.0) {
+    return {
+      level: 'trudne warunki',
+      note: 'Wysoka fala — wyjście małą łodzią i łowienie z falochronu są ryzykowne.',
+    };
+  }
+  return {
+    level: 'niebezpiecznie',
+    note: 'Sztormowa fala. Nie wchodź na falochrony ani ostrogi, nie wypływaj.',
+  };
+}
+
+// ============================================================
+// Korekta gatunkowa
+// ============================================================
+
+export interface SpeciesContext {
+  locationType: FishingLocationType;
+  temperature: number;
+  phase: DayPhase;
+  cloudCover: number;
+  windSpeed: number;
+  pressureChange24h: number | null;
+}
+
+/**
+ * Korekta gatunkowa — zestaw jawnych, deterministycznych reguł.
+ * Każda reguła dokłada albo odejmuje punkty i zostawia po sobie zdanie
+ * wyjaśnienia. Suma jest przycinana do ±SPECIES_DELTA_LIMIT.
+ */
+export function speciesAdjustment(species: SpeciesProfile, ctx: SpeciesContext): SpeciesAdjustment {
+  const reasons: string[] = [];
+  let delta = 0;
+
+  // 1. Akwen
+  if (!species.habitats.includes(ctx.locationType)) {
+    delta -= 12;
+    reasons.push(`${species.name} nie jest typowym gatunkiem dla akwenu „${ctx.locationType}” (-12).`);
+  }
+
+  // 2. Temperatura
+  const [tMin, tMax] = species.temperatureRange;
+  if (ctx.temperature >= tMin && ctx.temperature <= tMax) {
+    delta += 4;
+    reasons.push(`Temperatura ${Math.round(ctx.temperature)} °C mieści się w zakresie ${tMin}–${tMax} °C (+4).`);
+  } else if (ctx.temperature >= tMin - 4 && ctx.temperature <= tMax + 4) {
+    reasons.push(`Temperatura ${Math.round(ctx.temperature)} °C jest tuż obok zakresu ${tMin}–${tMax} °C (0).`);
+  } else {
+    delta -= 8;
+    reasons.push(`Temperatura ${Math.round(ctx.temperature)} °C jest poza zakresem ${tMin}–${tMax} °C (-8).`);
+  }
+
+  // 3. Światło / pora dnia
+  const twilight = ctx.phase === 'świt' || ctx.phase === 'zmierzch';
+  const night = ctx.phase === 'noc';
+  const bright = ctx.phase === 'dzień';
+  if (species.light === 'przyćmione') {
+    if (twilight) { delta += 6; reasons.push('Szczyt aktywności o świcie i zmierzchu (+6).'); }
+    else if (bright && ctx.cloudCover < 30) { delta -= 5; reasons.push('Ostre światło w środku dnia gatunkowi nie służy (-5).'); }
+    else if (night) { delta += 2; reasons.push('Noc bywa produktywna (+2).'); }
+  } else if (species.light === 'jasne') {
+    if (bright) { delta += 4; reasons.push('Poluje wzrokiem — pełne światło dnia pomaga (+4).'); }
+    else if (twilight) { delta += 2; reasons.push('Świt i zmierzch nadal dobre (+2).'); }
+    else if (night) { delta -= 6; reasons.push('Po zmroku praktycznie nie żeruje (-6).'); }
+  } else if (species.light === 'nocne') {
+    if (night) { delta += 6; reasons.push('Gatunek nocny — ciemność działa na jego korzyść (+6).'); }
+    else if (twilight) { delta += 4; reasons.push('Świt i zmierzch to klasyczne okno (+4).'); }
+    else if (bright) { delta -= 5; reasons.push('W pełnym słońcu schodzi głębiej i przestaje żerować (-5).'); }
+  }
+
+  // 4. Wiatr i falowanie
+  const windThresholds = WIND_THRESHOLDS[ctx.locationType];
+  if (species.wind === 'lubi') {
+    if (ctx.windSpeed >= windThresholds.optimalFrom && ctx.windSpeed <= windThresholds.optimalTo) {
+      delta += 3;
+      reasons.push('Robocza fala przy brzegu sprzyja temu gatunkowi (+3).');
+    } else if (ctx.windSpeed <= windThresholds.calm) {
+      delta -= 3;
+      reasons.push('Całkowita cisza — woda zbyt przejrzysta, ryba ostrożna (-3).');
+    }
+  } else if (species.wind === 'nie lubi') {
+    if (ctx.windSpeed > windThresholds.strong) {
+      delta -= 5;
+      reasons.push('Silny wiatr utrudnia prezentację przynęty temu gatunkowi (-5).');
+    } else if (ctx.windSpeed <= windThresholds.calm) {
+      delta += 3;
+      reasons.push('Spokojna woda to dobre warunki dla tego gatunku (+3).');
     }
   }
-  return wins.sort((a, b) => b.score - a.score).slice(0, 3);
-}
-/**
- * Oblicza zmianę wartości na podstawie dwóch poprawnych (skończonych) liczb.
- * Zwraca obiekt z { change: liczba; hasData: true } gdy >= 2 wartości,
- * lub { change: 0; hasData: false } gdy < 2 wartości.
- */
-export function computeTrendChange(values: number[]): { change: number; hasData: boolean } {
-  const finite = values.filter(v => Number.isFinite(v));
-  if (finite.length < 2) return { change: 0, hasData: false };
-  return { change: r1(finite[finite.length - 1] - finite[0]), hasData: true };
-}
 
-/**
- * Odfiltruj dzisiejszy dzień i przyszłe daty z danych trendu.
- * Zwraca nowy HistoricalDaily zawierający tylko pełne dni przed dziś.
- * Zwraca null, jeśli nie ma żadnych dni przed dziś.
- */
-export function filterTrendDays(hd: HistoricalDaily | null | undefined): HistoricalDaily | null {
-  if (!hd || !hd.time) return null;
-  const dateParts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Europe/Warsaw', year: 'numeric', month: '2-digit', day: '2-digit',
-  }).formatToParts(new Date());
-  const part = (type: Intl.DateTimeFormatPartTypes) => dateParts.find(p => p.type === type)?.value;
-  const todayStr = `${part('year')}-${part('month')}-${part('day')}`;
-  const indices: number[] = [];
-  for (let i = 0; i < hd.time.length; i++) {
-    if (hd.time[i] < todayStr) indices.push(i);
+  // 5. Wrażliwość na ciśnienie
+  if (species.pressureSensitive && ctx.pressureChange24h !== null && Math.abs(ctx.pressureChange24h) > 5) {
+    delta -= 5;
+    reasons.push(`Skok ciśnienia o ${round1(ctx.pressureChange24h)} hPa/24 h mocno wyłącza brania (-5).`);
   }
-  if (indices.length === 0) return null;
 
-  return {
-    time: indices.map(i => hd.time[i]),
-    temperatureMax: indices.map(i => hd.temperatureMax[i]),
-    temperatureMin: indices.map(i => hd.temperatureMin[i]),
-    temperatureMean: indices.map(i => hd.temperatureMean[i]),
-    precipitationSum: indices.map(i => hd.precipitationSum[i]),
-    windSpeedMax: indices.map(i => hd.windSpeedMax[i]),
-    windDirectionDominant: indices.map(i => hd.windDirectionDominant[i]),
-    pressureMean: indices.map(i => hd.pressureMean[i]),
-    weatherCode: indices.map(i => hd.weatherCode[i]),
-  };
+  // 6. Zachmurzenie
+  if (species.likesClouds && ctx.cloudCover >= 40 && ctx.cloudCover <= 90) {
+    delta += 2;
+    reasons.push('Zachmurzenie rozprasza światło i wydłuża żerowanie (+2).');
+  }
+
+  const clamped = clamp(delta, -SPECIES_DELTA_LIMIT, SPECIES_DELTA_LIMIT);
+  if (clamped !== delta) {
+    reasons.push(`Suma korekt przycięta do ±${SPECIES_DELTA_LIMIT} pkt.`);
+  }
+  return { delta: Math.round(clamped), reasons };
 }
 
-export function calcTrend(hd: HistoricalDaily | null): TrendData {
-  if (!hd || hd.time.length < 2) return { temperatureChange: 0, pressureChange: 0, totalRain: 0, windTrend: 'stabilny', improvement: false };
-  const tm = hd.temperatureMean.slice(-3), pr = hd.pressureMean.slice(-3);
-  const tempResult = computeTrendChange(tm);
-  const presResult = computeTrendChange(pr);
-  const improvement = tempResult.hasData && presResult.hasData;
-  const rn = hd.precipitationSum.slice(-3);
-  return {
-    temperatureChange: tempResult.change,
-    pressureChange: presResult.change,
-    totalRain: rn.reduce((a: number, b: number) => a + b, 0),
-    windTrend: 'stabilny',
-    improvement,
-  };
+// ============================================================
+// Wynik dla jednej godziny
+// ============================================================
+
+export interface ScoreContext {
+  hour: HourPoint;
+  locationType: FishingLocationType;
+  sunriseMinutes: number;
+  sunsetMinutes: number;
+  moon: MoonInfo;
+  /** Zmiana ciśnienia względem tej samej godziny 24 h wcześniej. */
+  pressureChange24h: number | null;
+  /** Zmiana temperatury względem średniej z 3 poprzednich dni. */
+  temperatureChange: number | null;
+  /** Rozrzut ciśnienia i wiatru w oknie ±12 h. */
+  pressureRange: number | null;
+  windRange: number | null;
+  /** Wysokość fali (m) — tylko tryb morski, null gdy brak danych. */
+  waveHeight: number | null;
 }
 
-export function calculateFishingScore(current: CurrentWeather, hourly: ForecastHourly, historicalDaily: HistoricalDaily | null, marineData: MarineData | null, locationType: FishingLocationType): ForecastResult {
-  const { hour, minute } = getIsoHourMinute(current.time);
-  const ws = calcWindScore(current.windSpeed, current.windGusts, locationType);
-  const ps = calcPressureScore(current.pressure, historicalDaily);
-  const rs = calcRainScore(current.precipitation, historicalDaily);
-  const ts = calcTempScore(current.temperature, current.feelsLike, historicalDaily);
-  const cs = calcCloudScore(current.cloudCover);
-  const tis = calcTimeScore(current.isDay, hour);
-  const marineApplicable = locationType === "morze" && !!marineData?.current;
-  const ms = marineApplicable ? calcMarineScore(marineData!.current!.waveHeight, marineData!.current!.waveDirection, marineData!.current!.waterTemperature, current.windSpeed) : 0;
-  // Wagi sumują się do 1.0 tylko gdy dostępny jest komponent morski (tryb "morze").
-  // Dla jeziora/rzeki (bez danych morskich) trzeba znormalizować przez faktycznie
-  // użytą sumę wag, inaczej maksymalny możliwy wynik wynosiłby 85, a nie 100.
-  const usedWeightSum = WIND_WEIGHT + PRESSURE_WEIGHT + RAIN_WEIGHT + TEMP_WEIGHT + CLOUD_WEIGHT + TIME_WEIGHT + (marineApplicable ? MARINE_WEIGHT : 0);
-  let totalScore = (ws * WIND_WEIGHT + ps * PRESSURE_WEIGHT + rs * RAIN_WEIGHT + ts * TEMP_WEIGHT + cs * CLOUD_WEIGHT + tis * TIME_WEIGHT + ms * MARINE_WEIGHT) / usedWeightSum;
-  totalScore = Math.round(clamp(totalScore, 0, MAX_SCORE));
-  let verdict: FishingVerdict, verdictLabel: string, verdictIcon: string;
-  if (totalScore >= 75) { verdict = "go"; verdictLabel = "Idź na ryby!"; verdictIcon = "\u{1F7E2}"; }
-  else if (totalScore >= 45) { verdict = "conditional"; verdictLabel = "Warunkowo"; verdictIcon = "\u{1F7E1}"; }
-  else { verdict = "skip"; verdictLabel = "Lepiej odpuść"; verdictIcon = "\u{1F534}"; }
-  const components: ScoreComponent[] = [
-    { name: "Wiatr", weight: WIND_WEIGHT, score: ws, maxScore: MAX_SCORE, details: ["Prędkość: " + current.windSpeed + " km/h", "Porywy: " + current.windGusts + " km/h", "Kierunek: " + getWD(current.windDirection)] },
-    { name: "Ciśnienie", weight: PRESSURE_WEIGHT, score: ps, maxScore: MAX_SCORE, details: ["Ciśnienie: " + current.pressure + " hPa"] },
-    { name: "Opady", weight: RAIN_WEIGHT, score: rs, maxScore: MAX_SCORE, details: ["Aktualnie: " + current.precipitation + " mm/h", "Typ: " + getWCD(current.weatherCode)] },
-    { name: "Temperatura", weight: TEMP_WEIGHT, score: ts, maxScore: MAX_SCORE, details: ["Aktualna: " + current.temperature + "°C", "Odczuwalna: " + current.feelsLike + "°C"] },
-    { name: "Zachmurzenie", weight: CLOUD_WEIGHT, score: cs, maxScore: MAX_SCORE, details: ["Chmury: " + current.cloudCover + "%"] },
-    { name: "Pora dnia", weight: TIME_WEIGHT, score: tis, maxScore: MAX_SCORE, details: [current.isDay === 1 ? "Dzień" : "Noc"] },
+/** Pełna ocena warunków dla jednej godziny, z rozbiciem na czynniki. */
+export function computeScore(ctx: ScoreContext, speciesId: SpeciesId): FishingScore {
+  const { hour, locationType } = ctx;
+  const species = getSpecies(speciesId);
+  const minutes = (() => {
+    const timePart = hour.time.includes('T') ? hour.time.split('T')[1] : '00:00';
+    return Number.parseInt(timePart.slice(0, 2), 10) * 60 + Number.parseInt(timePart.slice(3, 5), 10);
+  })();
+
+  const phase = dayPhase(minutes, ctx.sunriseMinutes, ctx.sunsetMinutes);
+
+  const windScore = scoreWind(hour.windSpeed, hour.windGusts, locationType);
+  const pressureScore = scorePressure(hour.pressure, ctx.pressureChange24h);
+  const temperatureScore = scoreTemperature(hour.temperature, ctx.temperatureChange);
+  const lightScore = scoreLight(minutes, ctx.sunriseMinutes, ctx.sunsetMinutes);
+  const precipitationScore = scorePrecipitation(hour.precipitation, hour.weatherCode);
+  const cloudScore = scoreCloud(hour.cloudCover);
+  const moonScore = scoreMoon(ctx.moon.illumination);
+  const stabilityScore =
+    ctx.pressureRange !== null && ctx.windRange !== null
+      ? scoreStability(ctx.pressureRange, ctx.windRange)
+      : 55;
+
+  const factors: ScoreFactor[] = [
+    {
+      key: 'wind',
+      label: 'Wiatr',
+      weight: WEIGHTS.wind,
+      score: windScore,
+      value: `${Math.round(hour.windSpeed)} km/h ${windDirectionName(hour.windDirection)} (porywy ${Math.round(hour.windGusts)})`,
+      impact: impactFor(windScore),
+      description: describeWind(hour.windSpeed, hour.windGusts, locationType),
+    },
+    {
+      key: 'pressure',
+      label: 'Ciśnienie',
+      weight: WEIGHTS.pressure,
+      score: pressureScore,
+      value:
+        ctx.pressureChange24h === null
+          ? `${Math.round(hour.pressure)} hPa`
+          : `${Math.round(hour.pressure)} hPa (${ctx.pressureChange24h > 0 ? '+' : ''}${round1(ctx.pressureChange24h)} / 24 h)`,
+      impact: impactFor(pressureScore),
+      description: describePressure(hour.pressure, ctx.pressureChange24h),
+    },
+    {
+      key: 'temperature',
+      label: 'Temperatura',
+      weight: WEIGHTS.temperature,
+      score: temperatureScore,
+      value:
+        ctx.temperatureChange === null
+          ? `${Math.round(hour.temperature)} °C`
+          : `${Math.round(hour.temperature)} °C (${ctx.temperatureChange > 0 ? '+' : ''}${round1(ctx.temperatureChange)} vs 3 dni)`,
+      impact: impactFor(temperatureScore),
+      description: describeTemperature(hour.temperature, ctx.temperatureChange),
+    },
+    {
+      key: 'light',
+      label: 'Pora dnia',
+      weight: WEIGHTS.light,
+      score: lightScore,
+      value: phase,
+      impact: impactFor(lightScore),
+      description: describePhase(phase),
+    },
+    {
+      key: 'precipitation',
+      label: 'Opady',
+      weight: WEIGHTS.precipitation,
+      score: precipitationScore,
+      value:
+        hour.precipitation > 0
+          ? `${round1(hour.precipitation)} mm/h — ${weatherCodeDescription(hour.weatherCode)}`
+          : weatherCodeDescription(hour.weatherCode),
+      impact: impactFor(precipitationScore),
+      description: describePrecipitation(hour.precipitation, hour.weatherCode),
+    },
+    {
+      key: 'cloud',
+      label: 'Zachmurzenie',
+      weight: WEIGHTS.cloud,
+      score: cloudScore,
+      value: `${Math.round(hour.cloudCover)} %`,
+      impact: impactFor(cloudScore),
+      description: describeCloud(hour.cloudCover),
+    },
+    {
+      key: 'moon',
+      label: 'Faza księżyca',
+      weight: WEIGHTS.moon,
+      score: moonScore,
+      value: `${ctx.moon.icon} ${ctx.moon.phase} (${Math.round(ctx.moon.illumination * 100)} %)`,
+      impact: impactFor(moonScore),
+      description: describeMoon(ctx.moon),
+    },
+    {
+      key: 'stability',
+      label: 'Stabilność pogody',
+      weight: WEIGHTS.stability,
+      score: stabilityScore,
+      value: stabilityScore >= 72 ? 'stabilnie' : stabilityScore >= 52 ? 'umiarkowanie' : 'rozchwiana',
+      impact: impactFor(stabilityScore),
+      description: describeStability(stabilityScore, ctx.pressureRange, ctx.windRange),
+    },
   ];
-  if (marineApplicable) components.push({ name: "Dane morskie", weight: MARINE_WEIGHT, score: ms, maxScore: MAX_SCORE, details: ["Fala: " + marineData!.current!.waveHeight + " m", "Woda: " + marineData!.current!.waterTemperature + "°C"] });
-  const factors: WeatherFactor[] = [];
-  const addF = (n: string, ic: string, v: string, imp: WeatherFactor["impact"], ds: string) => factors.push({ name: n, icon: ic, value: v, impact: imp, description: ds });
-  addF("Wiatr", "\u{1F4A8}", current.windSpeed + " km/h", ws >= 70 ? "positive" : ws >= 45 ? "neutral" : "negative", getWindDesc(current.windSpeed, locationType));
-  addF("Ciśnienie", "\u{1F771}", current.pressure + " hPa", ps >= 75 ? "positive" : ps >= 60 ? "neutral" : "negative", getPresDesc(current.pressure));
-  addF("Opady", "\u{1F327}️", current.precipitation > 0 ? current.precipitation + " mm/h" : "Brak opadów", rs >= 75 ? "positive" : rs >= 55 ? "neutral" : "negative", getRainDesc(current.precipitation));
-  addF("Temperatura", "\u{1F771}", current.temperature + "°C (odczuwalna: " + current.feelsLike + "°C)", ts >= 75 ? "positive" : ts >= 60 ? "neutral" : "negative", getTempDesc(current.temperature));
-  addF("Zachmurzenie", "☁", current.cloudCover + "%", cs >= 75 ? "positive" : cs >= 60 ? "neutral" : "negative", getCloudDesc(current.cloudCover));
-  addF("Pora dnia", current.isDay === 1 ? "☀" : "\u{1F319}", String(hour).padStart(2, '0') + ":" + String(minute).padStart(2, '0'), tis >= 80 ? "positive" : "neutral", tis >= 80 ? "Sprzyjająca pora aktywności ryb." : "Nieidealna pora.");
-  if (marineApplicable) {
-    const msc = ms;
-    addF("Fale (morze)", "\u{1F30A}", marineData!.current!.waveHeight + " m", msc >= 70 ? "positive" : msc >= 45 ? "neutral" : "negative", getWaveDesc(marineData!.current!.waveHeight));
-    addF("Temperatura morza", "\u{1F30A}", marineData!.current!.waterTemperature + "°C", "neutral", "Woda: " + marineData!.current!.waterTemperature + "°C");
+
+  const warnings: string[] = [];
+  let marineIncluded = false;
+
+  if (locationType === 'morze') {
+    if (ctx.waveHeight !== null && isNum(ctx.waveHeight)) {
+      const waveScore = scoreWave(ctx.waveHeight);
+      const safety = waveSafety(ctx.waveHeight);
+      factors.push({
+        key: 'wave',
+        label: 'Fala',
+        weight: MARINE_WEIGHT,
+        score: waveScore,
+        value: `${round1(ctx.waveHeight)} m — ${safety.level}`,
+        impact: impactFor(waveScore),
+        description: safety.note,
+      });
+      marineIncluded = true;
+      if (ctx.waveHeight > WAVE_THRESHOLDS.high) {
+        warnings.push(`Fala ${round1(ctx.waveHeight)} m — ${safety.note}`);
+      }
+    } else {
+      warnings.push(
+        'Marine API nie zwróciło danych o fali dla tej lokalizacji. Wynik liczony jest wyłącznie z pogody — nie zastępuje oceny bezpieczeństwa nad wodą.'
+      );
+    }
   }
-  const keyFactors = factors.filter(f => f.impact !== "neutral").sort((a, b) => ({ positive: 1, negative: -1, neutral: 0 }[b.impact] - { positive: 1, negative: -1, neutral: 0 }[a.impact])).slice(0, 4).map(f => f.icon + " " + f.name + ": " + f.description);
-  const bestWindows = findBestWindows(hourly, current.time, marineData, locationType);
-  const trend = calcTrend(historicalDaily);
-  const calculationNotes: string[] = [];
-  if (totalScore >= 75) calculationNotes.push("\u{1F7E2} Warunki bardzo sprzyjające!");
-  else if (totalScore >= 45) calculationNotes.push("\u{1F7E1} Warunki umiarkowane.");
-  else calculationNotes.push("\u{1F534} Warunki niezbyt sprzyjające.");
-  if (locationType === "morze" && marineData?.current && marineData.current.waveHeight > WAVE_THRESHOLDS.l) calculationNotes.push("⚠️ Fale powyżej 2m!");
-  if (locationType === "morze" && !marineData?.current) calculationNotes.push("⚠️ Brak danych morskich — wynik uwzględnia to ostrożnościowo.");
-  if (current.windGusts > current.windSpeed * 2) calculationNotes.push("\u{1F4A8} Zmienny wiatr z podmuchami.");
-  if (current.pressure < 990) calculationNotes.push("\u{1F327}️ Niskie ciśnienie.");
-  return { score: totalScore, verdict, verdictLabel, verdictIcon, components, factors, bestWindows, trend, keyFactors, calculationNotes };
+
+  const weightSum = factors.reduce((sum, f) => sum + f.weight, 0);
+  const weighted = factors.reduce((sum, f) => sum + f.score * f.weight, 0);
+  const baseScore = Math.round(clamp(weighted / weightSum, 0, 100));
+
+  const adjustment = speciesAdjustment(species, {
+    locationType,
+    temperature: hour.temperature,
+    phase,
+    cloudCover: hour.cloudCover,
+    windSpeed: hour.windSpeed,
+    pressureChange24h: ctx.pressureChange24h,
+  });
+
+  const score = Math.round(clamp(baseScore + adjustment.delta, 0, 100));
+
+  if (hour.weatherCode >= 95) {
+    warnings.push('Prognozowana burza — nie łów z odsłoniętego brzegu ani z łodzi.');
+  }
+  if (hour.windGusts >= 60) {
+    warnings.push(`Porywy do ${Math.round(hour.windGusts)} km/h — uważaj na drzewa i wysoką falę.`);
+  }
+
+  return {
+    score,
+    label: ratingLabel(score),
+    baseScore,
+    speciesId,
+    speciesDelta: adjustment.delta,
+    speciesReasons: adjustment.reasons,
+    factors,
+    warnings,
+    marineIncluded,
+    phase,
+    moon: ctx.moon,
+  };
+}
+
+// ============================================================
+// Opisy słowne
+// ============================================================
+
+function describeWind(speed: number, gusts: number, type: FishingLocationType): string {
+  const t = WIND_THRESHOLDS[type];
+  const gusty = speed > 1 && gusts / speed > 1.7 ? ' Wiatr jest porywisty.' : '';
+  if (speed <= t.calm) return 'Niemal bezwietrznie — woda przejrzysta, ryby bardziej ostrożne.' + gusty;
+  if (speed <= t.optimalTo) return 'Lekki, roboczy wiatr — dotlenia wodę i maskuje żyłkę.' + gusty;
+  if (speed <= t.strong) return 'Umiarkowany do silnego wiatr — łowienie możliwe, ale wymaga osłoniętego brzegu.' + gusty;
+  if (speed <= t.severe) return 'Silny wiatr — trudna prezentacja przynęty i niewygodne warunki.' + gusty;
+  return 'Wichura — wyjście nad wodę jest niebezpieczne.' + gusty;
+}
+
+function describePressure(pressure: number, change: number | null): string {
+  const level =
+    pressure >= 1008 && pressure <= 1024
+      ? 'Ciśnienie w komfortowym zakresie.'
+      : pressure > 1024
+        ? 'Wysokie ciśnienie — ryby często stoją głębiej.'
+        : 'Niskie ciśnienie.';
+  if (change === null) return level;
+  if (Math.abs(change) <= 1) return `${level} Utrzymuje się stabilnie od doby.`;
+  if (change < 0 && change >= -4) return `${level} Powoli spada — często zwiastuje dobre żerowanie przed frontem.`;
+  if (change > 0 && change <= 4) return `${level} Powoli rośnie — pogoda się układa.`;
+  return `${level} Zmiana o ${round1(change)} hPa na dobę to gwałtowny skok, który zwykle wyłącza brania.`;
+}
+
+function describeTemperature(temperature: number, change: number | null): string {
+  const level =
+    temperature >= 12 && temperature <= 22
+      ? 'Temperatura w optymalnym przedziale.'
+      : temperature < 3
+        ? 'Zimno — metabolizm ryb mocno spowolniony.'
+        : temperature > 28
+          ? 'Upał — ryby schodzą w chłodniejsze warstwy.'
+          : 'Temperatura umiarkowana.';
+  if (change === null) return level;
+  if (Math.abs(change) <= 1.5) return `${level} Bez zmian względem ostatnich trzech dni.`;
+  if (change > 0) return `${level} Cieplej o ${round1(change)} °C niż średnio przez ostatnie trzy dni.`;
+  return `${level} Chłodniej o ${round1(Math.abs(change))} °C niż średnio przez ostatnie trzy dni.`;
+}
+
+function describePrecipitation(precipitation: number, weatherCode: number): string {
+  if (weatherCode >= 95) return 'Burza — warunek odradzający wyjście niezależnie od reszty prognozy.';
+  if (precipitation === 0) return 'Bez opadów.';
+  if (precipitation <= 0.3) return 'Mżawka — delikatny deszcz często poprawia żerowanie.';
+  if (precipitation <= 1) return 'Słaby deszcz, do przeżycia pod parasolem.';
+  if (precipitation <= 3) return 'Wyraźny deszcz — woda się mąci, komfort łowienia spada.';
+  if (precipitation <= 6) return 'Silny deszcz — gwałtowny przybór i mętna woda.';
+  return 'Ulewa — łowienie praktycznie wykluczone.';
+}
+
+function describeCloud(cloudCover: number): string {
+  if (cloudCover < 15) return 'Czyste niebo — ostre światło, ryby ostrożniejsze na płyciznach.';
+  if (cloudCover <= 75) return 'Rozproszone światło — najlepszy wariant dla większości gatunków.';
+  if (cloudCover <= 90) return 'Duże zachmurzenie — światło miękkie, dzień wydłużony dla drapieżników.';
+  return 'Całkowity zwał chmur.';
+}
+
+function describePhase(phase: DayPhase): string {
+  switch (phase) {
+    case 'świt':
+      return 'Świt — klasyczne okno żerowania.';
+    case 'zmierzch':
+      return 'Zmierzch — drugie okno żerowania w ciągu doby.';
+    case 'poranek':
+      return 'Poranek — aktywność wciąż podwyższona.';
+    case 'popołudnie':
+      return 'Późne popołudnie — aktywność zaczyna rosnąć.';
+    case 'dzień':
+      return 'Środek dnia — zwykle najsłabsza pora.';
+    case 'noc':
+    default:
+      return 'Noc — dobra dla gatunków nocnych, słaba dla wzrokowców.';
+  }
+}
+
+function describeMoon(moon: MoonInfo): string {
+  if (moon.illumination <= 0.08) return 'Nów — ciemne noce, częściej notowana wzmożona aktywność.';
+  if (moon.illumination >= 0.92) return 'Pełnia — jasne noce i silniejsze pływy, ryby żerują też po zmroku.';
+  if (moon.illumination >= 0.4 && moon.illumination <= 0.6) return 'Kwadra — wpływ księżyca neutralny.';
+  return 'Faza pośrednia — wpływ księżyca umiarkowany.';
+}
+
+function describeStability(score: number, pressureRange: number | null, windRange: number | null): string {
+  if (pressureRange === null || windRange === null) return 'Brak pełnych danych do oceny stabilności — przyjęto wartość neutralną.';
+  const detail = `Ciśnienie waha się o ${round1(pressureRange)} hPa, wiatr o ${Math.round(windRange)} km/h w oknie ±12 h.`;
+  if (score >= 72) return `Pogoda stabilna. ${detail}`;
+  if (score >= 52) return `Pogoda umiarkowanie zmienna. ${detail}`;
+  return `Pogoda rozchwiana — to najczęstszy powód słabych brań. ${detail}`;
 }

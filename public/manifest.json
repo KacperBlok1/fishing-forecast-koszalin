@@ -1,14 +1,21 @@
 {
-  "name": "Czy warto iść na ryby? — Prognoza wędkarska",
-  "short_name": "Warto na ryby?",
-  "description": "Ocena warunków wędkarskich 0-100 na podstawie pogody, dla jeziora, rzeki lub morza.",
+  "name": "Czy warto iść na ryby? — planer wypadu",
+  "short_name": "Na ryby?",
+  "description": "Planer wypadu na ryby dla Koszalina i okolic: ocena 0-100, najlepsze okna czasowe, prognoza na 7 dni i tryb morski.",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#0B1613",
-  "theme_color": "#0B1613",
+  "orientation": "portrait",
+  "background_color": "#08110F",
+  "theme_color": "#08110F",
   "lang": "pl",
+  "dir": "ltr",
+  "categories": ["weather", "sports", "utilities"],
   "icons": [
-    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png", "purpose": "any" }
   ]
 }
