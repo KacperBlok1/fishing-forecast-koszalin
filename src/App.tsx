@@ -45,7 +45,8 @@ function App() {
     () => cachedPrefs() ?? { species: 'szczupak', selectedSpotId: null, activeTab: 'teraz' }
   );
   const [bundle, setBundle] = useState<WeatherBundle | null>(null);
-  const [bundleSavedAt, setBundleSavedAt] = useState<number | null>(null);
+  /** Kiedy ostatnio pobraliśmy prognozę. Nic tego nie renderuje, więc ref, nie stan. */
+  const bundleSavedAt = useRef<number | null>(null);
 
   const [panelOpen, setPanelOpen] = useState(false);
   const [loadingSpots, setLoadingSpots] = useState(false);
@@ -111,7 +112,8 @@ function App() {
     } finally {
       setLoadingSpots(false);
     }
-  }, [session]);
+    // Zależność to sama funkcja recheck (stabilna), a nie cały obiekt sesji.
+  }, [session.recheck]);
 
   useEffect(() => {
     if (session.status !== 'authenticated') return;
@@ -125,11 +127,11 @@ function App() {
       const local = cachedBundle(spot.id, species);
       if (local) {
         setBundle(local.bundle);
-        setBundleSavedAt(local.savedAt);
+        bundleSavedAt.current = local.savedAt;
         setWeatherError(null);
       } else {
         setBundle(null);
-        setBundleSavedAt(null);
+        bundleSavedAt.current = null;
       }
 
       setLoadingWeather(true);
@@ -137,7 +139,7 @@ function App() {
       try {
         const fresh = await fetchWeatherBundle(spot, force);
         setBundle(fresh);
-        setBundleSavedAt(Date.now());
+        bundleSavedAt.current = Date.now();
         cacheBundle(spot.id, species, fresh);
         setWeatherError(null);
         setStaleNote(
@@ -161,13 +163,20 @@ function App() {
         setLoadingWeather(false);
       }
     },
-    [session]
+    [session.recheck]
   );
+
+  // Kluczem są dane łowiska, które realnie wpływają na zapytanie (identyfikator
+  // i typ akwenu), a nie tożsamość obiektu: po odświeżeniu listy z serwera
+  // dostajemy nowe obiekty o tej samej treści i nie ma powodu pobierać
+  // ponownie tej samej prognozy.
+  const selectedSpotKey = selectedSpot ? `${selectedSpot.id}:${selectedSpot.type}` : null;
 
   useEffect(() => {
     if (session.status !== 'authenticated' || !selectedSpot) return;
     void loadWeather(selectedSpot, prefs.species);
-  }, [session.status, selectedSpot, prefs.species, loadWeather]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- zależymy od treści łowiska, nie od tożsamości obiektu
+  }, [session.status, selectedSpotKey, prefs.species, loadWeather]);
 
   // ---------------------------------------------------------------- synchronizacja między urządzeniami
 
@@ -179,10 +188,11 @@ function App() {
     if (document.visibilityState !== 'visible') return;
     if (session.status !== 'authenticated') return;
     void loadAccountData();
-    if (selectedSpot && (bundleSavedAt === null || Date.now() - bundleSavedAt > REFRESH_AFTER_MS)) {
+    const savedAt = bundleSavedAt.current;
+    if (selectedSpot && (savedAt === null || Date.now() - savedAt > REFRESH_AFTER_MS)) {
       void loadWeather(selectedSpot, prefs.species);
     }
-  }, [session.status, loadAccountData, selectedSpot, prefs.species, loadWeather, bundleSavedAt]);
+  }, [session.status, loadAccountData, selectedSpot, prefs.species, loadWeather]);
 
   useEffect(() => {
     document.addEventListener('visibilitychange', refreshOnFocus);

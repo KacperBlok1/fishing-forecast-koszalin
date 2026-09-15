@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ApiError, authApi } from '../api';
 import type { User } from '../api';
 import { cacheUser, cachedUser, clearLocalMirror } from '../services/storage';
@@ -79,5 +79,11 @@ export function useSession(): Session {
     setStatus('guest');
   }, []);
 
-  return { status, user, offlineIdentity, signIn, signOut, recheck: check };
+  // Obiekt MUSI być zapamiętany. Zwracanie świeżego literału przy każdym
+  // renderze psuje tożsamość referencji u konsumentów: ich useCallback/useEffect
+  // przeliczają się w kółko, co kończy się pętlą renderów i zalewem zapytań.
+  return useMemo(
+    () => ({ status, user, offlineIdentity, signIn, signOut, recheck: check }),
+    [status, user, offlineIdentity, signIn, signOut, check]
+  );
 }
