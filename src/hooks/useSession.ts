@@ -57,7 +57,8 @@ export function useSession(): Session {
   }, []);
 
   useEffect(() => {
-    void check();
+    const timer = window.setTimeout(() => void check(), 0);
+    return () => window.clearTimeout(timer);
   }, [check]);
 
   const signIn = useCallback((next: User) => {

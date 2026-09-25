@@ -110,7 +110,8 @@ export async function runMigrations(log: (message: string) => void): Promise<voi
       } catch (error) {
         await client.query('ROLLBACK');
         throw new Error(
-          `Migracja ${migration.name} nie przeszła: ${error instanceof Error ? error.message : String(error)}`
+          `Migracja ${migration.name} nie przeszła: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error }
         );
       }
     }

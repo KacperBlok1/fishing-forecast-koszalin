@@ -37,6 +37,7 @@ const REFRESH_AFTER_MS = 10 * 60 * 1000;
 
 function App() {
   const session = useSession();
+  const { recheck } = session;
 
   // ---------------------------------------------------------------- stan danych
 
@@ -106,18 +107,18 @@ function App() {
       });
     } catch (error: unknown) {
       if (error instanceof ApiError && error.isUnauthorized) {
-        await session.recheck();
+        await recheck();
       }
       // Przy błędzie sieci zostajemy na lokalnym lustrze — nie czyścimy listy.
     } finally {
       setLoadingSpots(false);
     }
-    // Zależność to sama funkcja recheck (stabilna), a nie cały obiekt sesji.
-  }, [session.recheck]);
+  }, [recheck]);
 
   useEffect(() => {
     if (session.status !== 'authenticated') return;
-    void loadAccountData();
+    const timer = window.setTimeout(() => void loadAccountData(), 0);
+    return () => window.clearTimeout(timer);
   }, [session.status, loadAccountData]);
 
   // ---------------------------------------------------------------- pogoda
@@ -151,7 +152,7 @@ function App() {
         const message =
           error instanceof ApiError ? error.message : 'Nie udało się pobrać prognozy z serwera.';
         if (error instanceof ApiError && error.isUnauthorized) {
-          await session.recheck();
+          await recheck();
           return;
         }
         if (local) {
@@ -163,7 +164,7 @@ function App() {
         setLoadingWeather(false);
       }
     },
-    [session.recheck]
+    [recheck]
   );
 
   // Kluczem są dane łowiska, które realnie wpływają na zapytanie (identyfikator
@@ -174,7 +175,8 @@ function App() {
 
   useEffect(() => {
     if (session.status !== 'authenticated' || !selectedSpot) return;
-    void loadWeather(selectedSpot, prefs.species);
+    const timer = window.setTimeout(() => void loadWeather(selectedSpot, prefs.species), 0);
+    return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- zależymy od treści łowiska, nie od tożsamości obiektu
   }, [session.status, selectedSpotKey, prefs.species, loadWeather]);
 

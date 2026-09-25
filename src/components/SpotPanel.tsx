@@ -64,14 +64,14 @@ export default function SpotPanel({
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  const queryReady = query.trim().length >= 2;
+  const shownResults = queryReady ? results : [];
+
   useEffect(() => {
-    if (query.trim().length < 2) {
-      setResults([]);
-      return;
-    }
+    if (!queryReady) return;
     let cancelled = false;
-    setSearching(true);
     const timer = window.setTimeout(() => {
+      setSearching(true);
       weatherApi
         .geocode(query)
         .then((found) => {
@@ -88,7 +88,7 @@ export default function SpotPanel({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [query]);
+  }, [query, queryReady]);
 
   const resetForm = () => {
     setName('');
@@ -280,10 +280,10 @@ export default function SpotPanel({
                 </span>
               </label>
 
-              {searching && <p className="muted">Szukam…</p>}
-              {results.length > 0 && (
+              {searching && queryReady && <p className="muted">Szukam…</p>}
+              {shownResults.length > 0 && (
                 <ul className="geo-results">
-                  {results.map((result) => (
+                  {shownResults.map((result) => (
                     <li key={result.id}>
                       <button
                         type="button"
@@ -310,7 +310,7 @@ export default function SpotPanel({
                   ))}
                 </ul>
               )}
-              {!searching && query.trim().length >= 2 && results.length === 0 && (
+              {!searching && queryReady && shownResults.length === 0 && (
                 <p className="muted">Brak wyników w Polsce — podaj współrzędne poniżej.</p>
               )}
 

@@ -67,7 +67,8 @@ export async function waitForDatabase(attempts = 30, delayMs = 2000): Promise<vo
           `Nie udało się połączyć z bazą po ${attempts} próbach. ` +
             `Sprawdź DATABASE_URL i kontener bazy. Ostatni błąd: ${
               error instanceof Error ? error.message : String(error)
-            }`
+            }`,
+          { cause: error }
         );
       }
       await new Promise<void>((resolve) => setTimeout(() => resolve(), delayMs));
