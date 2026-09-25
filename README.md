@@ -9,6 +9,8 @@ Dla wybranego łowiska i gatunku liczy ocenę **0–100** z etykietą
 pogodowe, pokazuje najlepsze okna czasowe w ciągu doby i prognozę na 7 dni.
 Dla łowisk morskich dokłada tryb z falą i oceną bezpieczeństwa.
 
+![Zakładka „Teraz”: ocena, rozbicie na czynniki i trend z 3 dni](docs/screenshot.png)
+
 Łowiska i ustawienia są **zapisane przy koncie na serwerze**: miejsce dodane
 na telefonie jest od razu dostępne na komputerze i odwrotnie.
 
